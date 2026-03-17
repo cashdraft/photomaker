@@ -1,0 +1,12 @@
+[Unit]
+Description=PhotoMaker: sync shirts from Yandex.Disk (WebDAV)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/photomaker/scripts/sync_shirts_from_mount.sh
+# Без таймаута — синк может долго идти по WebDAV
+TimeoutStartSec=0
+TimeoutStopSec=0
+# Не слать SIGKILL процессам при остановке
+KillMode=process

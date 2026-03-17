@@ -1,0 +1,41 @@
+body {
+    margin: 0;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #050816;
+    color: #e5e7eb;
+}
+
+.pm-header {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    backdrop-filter: blur(12px);
+    background: radial-gradient(circle at top left, #1f2937, #020617);
+}
+
+.pm-logo {
+    margin: 0;
+    padding: 16px 0;
+    font-size: 22px;
+    font-weight: 600;
+    color: #f9fafb;
+}
+
+.pm-main {
+    padding: 32px 0 64px;
+}
+
+.pm-container {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 16px;
+}
+
+h2 {
+    margin-top: 0;
+    margin-bottom: 12px;
+    font-size: 24px;
+}
+
+p {
+    margin-top: 0;
+    color: #9ca3af;
+}

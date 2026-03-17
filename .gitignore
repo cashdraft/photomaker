@@ -1,0 +1,43 @@
+# Env and secrets
+.env
+*.pyc
+__pycache__/
+.venv/
+venv/
+*.db
+database/*.db
+
+# Data and logs (do not commit synced files or logs)
+data/references/original/*
+data/references/preview/*
+data/shirts/original/*
+data/shirts/preview/*
+data/results/original/*
+data/results/preview/*
+data/temp/*
+data/archives/*
+data/sync_state/*
+!data/references/original/.gitkeep
+!data/references/preview/.gitkeep
+!data/shirts/original/.gitkeep
+!data/shirts/preview/.gitkeep
+!data/results/original/.gitkeep
+!data/results/preview/.gitkeep
+!data/temp/.gitkeep
+!data/archives/.gitkeep
+!data/sync_state/.gitkeep
+logs/*.log
+!logs/.gitkeep
+
+# Lock files (local only)
+*.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

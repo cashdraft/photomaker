@@ -1,0 +1,10 @@
+[Unit]
+Description=PhotoMaker: run Yandex.Disk sync every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=yes
+
+[Install]
+WantedBy=timers.target
