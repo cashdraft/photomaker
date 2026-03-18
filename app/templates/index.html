@@ -1,10 +1,51 @@
 {% extends "base.html" %}
 
-{% block title %}PhotoMaker — генерация маркетплейс-фото{% endblock %}
+{% block title %}PhotoMaker — новый проект{% endblock %}
 
 {% block content %}
-    <section>
-        <h2>PhotoMaker</h2>
-        <p>Черновой старт: backend и структура проекта созданы. Дальше сюда добавим выбор футболки, референсы и блоки генерации.</p>
+    <section class="pm-section">
+        <h2 style="display:none;">Выберите принт</h2>
+
+        <div class="pm-panel">
+            <div class="pm-row pm-row-gap">
+                <input id="shirtSearch" class="pm-input" type="text" placeholder="Например: 1_1_100_B" autocomplete="off" aria-label="Поиск по имени файла">
+                <button id="shirtSearchBtn" class="pm-btn" type="button">Найти</button>
+            </div>
+            <div id="shirtStatus" class="pm-muted" style="display:none;margin-top:8px;">Загрузка...</div>
+        </div>
+
+        <div id="shirtResults" class="pm-grid"></div>
     </section>
+
+    <section class="pm-section">
+        <h2>Проекты</h2>
+        <div class="pm-panel">
+            <div id="pmProjectsList" class="pm-projects-list"></div>
+        </div>
+    </section>
+
+    <div id="pmShirtModal" class="pm-modal" style="display:none;">
+        <div class="pm-modal-backdrop" data-close="1"></div>
+        <div class="pm-modal-card" role="dialog" aria-modal="true" aria-label="Выбор принта">
+            <div class="pm-modal-top">
+                <div class="pm-h3" style="margin:0;">Подтвердите принт</div>
+                <button id="pmModalCloseBtn" class="pm-btn" type="button">Закрыть</button>
+            </div>
+
+            <div class="pm-modal-body pm-modal-body-vertical">
+                <div id="pmModalFilename" class="pm-selected-filename"></div>
+                <img id="pmModalImg" class="pm-modal-img" alt="Принт">
+
+                <div class="pm-modal-bottom">
+                    <button id="pmModalCreateBtn" class="pm-btn pm-btn-primary" type="button" disabled>
+                        Создать проект и перейти к генерации
+                    </button>
+                    <div id="pmModalStatus" class="pm-muted" style="margin-top:10px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/shirt_select.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/projects_list.js') }}" defer></script>
 {% endblock %}

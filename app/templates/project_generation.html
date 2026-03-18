@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}PhotoMaker — генерация{% endblock %}
+
+{% block content %}
+    <section class="pm-section">
+        <div class="pm-project-top">
+            <div class="pm-panel pm-project-left">
+                <div class="pm-project-top-filename">{{ project.shirt_filename }}</div>
+
+                <div class="pm-project-left-row">
+                    <img src="{{ shirt_preview_url }}" alt="Принт" class="pm-project-shirt-img">
+
+                    <div class="pm-project-options">
+                        <div class="pm-option-block">
+                            <div class="pm-seg">
+                                <label class="pm-seg-item">
+                                    <input type="radio" name="pmBaseStyle" value="base" checked>
+                                    <span>База</span>
+                                </label>
+                                <label class="pm-seg-item">
+                                    <input type="radio" name="pmBaseStyle" value="oversize">
+                                    <span>Оверсайз</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="pm-option-block">
+                            <div class="pm-seg pm-seg-3">
+                                <label class="pm-seg-item">
+                                    <input type="radio" name="pmTorsoStyle" value="chest" checked>
+                                    <span>Грудь</span>
+                                </label>
+                                <label class="pm-seg-item">
+                                    <input type="radio" name="pmTorsoStyle" value="back">
+                                    <span>Спина</span>
+                                </label>
+                                <label class="pm-seg-item">
+                                    <input type="radio" name="pmTorsoStyle" value="both">
+                                    <span>Оба</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pm-panel pm-project-right">
+                <div class="pm-dropzone" id="pmDropzone" role="button" tabindex="0" aria-label="Перетащите референсы или выберите файлы">
+                    <div class="pm-dropzone-title">Перетащите референсы</div>
+                    <div class="pm-muted pm-dropzone-sub">или нажмите, чтобы выбрать файлы</div>
+                </div>
+
+                <input id="pmReferenceFiles" class="pm-input" type="file" multiple accept="image/*" style="display:none;">
+                <div class="pm-row pm-row-gap pm-align-center pm-dropzone-actions">
+                    <div id="pmSelectedFilesInfo" class="pm-muted" style="display:none;"></div>
+                    <button id="pmUploadRefsBtn" class="pm-btn pm-btn-primary" type="button">
+                        Загрузить референсы
+                    </button>
+                    <div id="pmUploadStatus" class="pm-muted" style="display:none;margin-top:0;"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="pm-panel pm-panel-gap">
+            <div class="pm-row pm-row-gap pm-align-center">
+                <button id="pmGenerateAllBtn" class="pm-btn pm-btn-primary" type="button">
+                    Сгенерировать все
+                </button>
+                <div id="pmRefsCount" class="pm-muted">Референсов: 0</div>
+                <div id="pmGenStatus" class="pm-muted"></div>
+            </div>
+        </div>
+
+        <div class="pm-grid-refs" id="pmReferencesList">
+            <!-- initial cards are rendered by JS -->
+        </div>
+    </section>
+
+    <div id="pmImageModal" class="pm-modal" style="display:none;">
+        <div class="pm-modal-backdrop" data-close="1"></div>
+        <div class="pm-modal-card" role="dialog" aria-modal="true" aria-label="Просмотр изображения">
+            <div class="pm-modal-top">
+                <div id="pmImageModalMeta" class="pm-muted"></div>
+                <button id="pmImageModalCloseBtn" class="pm-btn" type="button">Закрыть</button>
+            </div>
+            <button id="pmImageModalPrevBtn" class="pm-image-nav-btn pm-image-nav-prev" type="button" aria-label="Предыдущая">&lt;</button>
+            <button id="pmImageModalNextBtn" class="pm-image-nav-btn pm-image-nav-next" type="button" aria-label="Следующая">&gt;</button>
+            <div class="pm-modal-body" style="align-items:center; justify-content:center;">
+                <img id="pmImageModalImg" class="pm-modal-img" alt="Изображение">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.pmProjectId = "{{ project.id }}";
+        window.pmInitialReferences = {{ references|tojson }};
+    </script>
+    <script src="{{ url_for('static', filename='js/project_generation.js') }}" defer></script>
+{% endblock %}
+
