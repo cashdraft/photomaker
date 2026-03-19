@@ -17,6 +17,7 @@ data/results/preview/*
 data/temp/*
 data/archives/*
 data/sync_state/*
+data/models/*
 !data/references/original/.gitkeep
 !data/references/preview/.gitkeep
 !data/shirts/original/.gitkeep
@@ -26,7 +27,9 @@ data/sync_state/*
 !data/temp/.gitkeep
 !data/archives/.gitkeep
 !data/sync_state/.gitkeep
+!data/models/.gitkeep
 logs/*.log
+flask.log
 !logs/.gitkeep
 
 # Lock files (local only)

@@ -44,6 +44,10 @@ class Reference(db.Model):
     prompt_error = db.Column(db.Text, nullable=True)
     prompt_started_at = db.Column(db.DateTime, nullable=True)  # когда последний раз запускали генерацию промпта
 
+    # Последний результат генерации (копия из GenerationJob для надёжного отображения)
+    result_preview_rel_path = db.Column(db.String(512), nullable=True)
+    result_original_rel_path = db.Column(db.String(512), nullable=True)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 

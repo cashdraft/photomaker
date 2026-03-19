@@ -16,6 +16,7 @@ from app.services.project_service import (
     list_references,
 )
 from app.services.shirt_service import list_shirts
+from app.services.model_service import list_models
 from app.utils.image_utils import make_preview_image
 
 
@@ -41,6 +42,12 @@ def _ref_to_json(ref: Reference, project_id: str | None = None) -> Dict[str, Any
             out["result_preview_url"] = result["preview_url"]
             out["result_original_url"] = result["original_url"]
     return out
+
+
+@bp.get("/models")
+def models_list():
+    items = list_models()
+    return jsonify({"items": items})
 
 
 @bp.get("/shirts")
@@ -183,6 +190,7 @@ def projects_generate(project_id: str):
             options={
                 "base_style": payload.get("base_style", "base"),
                 "torso_style": payload.get("torso_style", "chest"),
+                "model": payload.get("model") or "",
             },
         )
     except ValueError as e:
@@ -215,6 +223,7 @@ def references_regenerate(project_id: str, reference_id: str):
             options={
                 "base_style": payload.get("base_style", "base"),
                 "torso_style": payload.get("torso_style", "chest"),
+                "model": payload.get("model") or "",
             },
         )
     except ValueError as e:

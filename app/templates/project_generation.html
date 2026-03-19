@@ -45,19 +45,31 @@
                 </div>
             </div>
 
-            <div class="pm-panel pm-project-right">
-                <div class="pm-dropzone" id="pmDropzone" role="button" tabindex="0" aria-label="Перетащите референсы или выберите файлы">
-                    <div class="pm-dropzone-title">Перетащите референсы</div>
-                    <div class="pm-muted pm-dropzone-sub">или нажмите, чтобы выбрать файлы</div>
+            <div class="pm-panel pm-project-right-col">
+                <div class="pm-panel-inner pm-panel-models">
+                    <label class="pm-option-label">Модель для генерации</label>
+                    <div class="pm-model-grid" id="pmModelGrid">
+                        <button type="button" class="pm-model-item pm-model-item-none" data-model="" aria-pressed="true">
+                            <img class="pm-model-thumb" src="{{ url_for('static', filename='img/model-empty.svg') }}" alt="Без модели">
+                            <span class="pm-model-name">Без модели</span>
+                        </button>
+                    </div>
+                    <div class="pm-muted pm-model-hint">Опционально: выберите предзагруженную модель</div>
                 </div>
 
-                <input id="pmReferenceFiles" class="pm-input" type="file" multiple accept="image/*" style="display:none;">
-                <div class="pm-row pm-row-gap pm-align-center pm-dropzone-actions">
-                    <div id="pmSelectedFilesInfo" class="pm-muted" style="display:none;"></div>
-                    <button id="pmUploadRefsBtn" class="pm-btn pm-btn-primary" type="button">
-                        Загрузить референсы
-                    </button>
-                    <div id="pmUploadStatus" class="pm-muted" style="display:none;margin-top:0;"></div>
+                <div class="pm-panel-inner pm-panel-refs">
+                    <div class="pm-dropzone" id="pmDropzone" role="button" tabindex="0" aria-label="Перетащите референсы или выберите файлы">
+                        <div class="pm-dropzone-title">Перетащите референсы</div>
+                        <div class="pm-muted pm-dropzone-sub">или нажмите, чтобы выбрать файлы</div>
+                    </div>
+                    <input id="pmReferenceFiles" class="pm-input" type="file" multiple accept="image/*" style="display:none;">
+                    <div class="pm-row pm-row-gap pm-align-center pm-dropzone-actions">
+                        <div id="pmSelectedFilesInfo" class="pm-muted" style="display:none;"></div>
+                        <button id="pmUploadRefsBtn" class="pm-btn pm-btn-primary" type="button">
+                            Загрузить референсы
+                        </button>
+                        <div id="pmUploadStatus" class="pm-muted" style="display:none;margin-top:0;"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -96,6 +108,6 @@
         window.pmProjectId = "{{ project.id }}";
         window.pmInitialReferences = {{ references|tojson }};
     </script>
-    <script src="{{ url_for('static', filename='js/project_generation.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='js/project_generation.js') }}?v=18" defer></script>
 {% endblock %}
 

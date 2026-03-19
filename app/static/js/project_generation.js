@@ -273,8 +273,17 @@ function renderReferenceCard(ref) {
             <button class="pm-btn pm-btn-secondary pm-ref-regenerate-prompt" type="button" data-reference-id="${ref.id}">
                 Промпт
             </button>
-            <button class="pm-btn pm-btn-secondary pm-ref-regenerate" type="button" data-reference-id="${ref.id}">
+            <button class="pm-btn pm-btn-secondary pm-ref-regenerate" type="button" data-reference-id="${ref.id}" ${!hasPromptVal ? 'disabled' : ''}>
                 Перегенерировать
+            </button>
+            <button class="pm-btn pm-btn-secondary pm-ref-download" type="button" data-reference-id="${ref.id}"
+                data-original-url="${resultOriginal}" style="${hasResult ? '' : 'display:none;'}">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Скачать
             </button>
         </div>
     `;
@@ -298,6 +307,14 @@ function renderReferenceCard(ref) {
     const regenBtn = card.querySelector(".pm-ref-regenerate");
     if (regenBtn) {
         regenBtn.addEventListener("click", () => regenerateReference(ref.id, regenBtn));
+    }
+
+    const downloadBtn = card.querySelector(".pm-ref-download");
+    if (downloadBtn) {
+        downloadBtn.addEventListener("click", () => {
+            const url = downloadBtn.dataset.originalUrl || resultOriginal;
+            if (url) downloadResult(url, ref.id);
+        });
     }
 
     const promptBtn = card.querySelector(".pm-ref-regenerate-prompt");
@@ -373,6 +390,8 @@ function updateCardPromptStatus(card, ref) {
     if (hasPrompt(ref) && ref.generated_prompt) {
         setupPromptCopyHandler(card);
     }
+    const regenBtn = card.querySelector(".pm-ref-regenerate");
+    if (regenBtn) regenBtn.disabled = !hasPrompt(ref);
 }
 
 function refreshReferencesFromApi() {
@@ -401,10 +420,15 @@ function startPollingForPrompts() {
             for (const ref of refs) {
                 const card = refsList.querySelector(`.pm-card-ref[data-reference-id="${ref.id}"]`);
                 if (!card) continue;
+                if (card.dataset.generating === "true") continue;
                 if (isPromptPending(ref)) {
                     anyPending = true;
                 } else {
                     updateCardPromptStatus(card, ref);
+                }
+                if (ref.result_preview_url && ref.result_original_url) {
+                    setRefResult(ref.id, ref.result_preview_url, ref.result_original_url);
+                    setRefStatus(ref.id, "готово");
                 }
             }
             updateGenerateButtonState();
@@ -413,6 +437,78 @@ function startPollingForPrompts() {
     }
     poll();
     pollIntervalId = setInterval(poll, 2500);
+}
+
+function applyRefResultsFromApi(refs) {
+    if (!refs || !refsList) return;
+    for (const ref of refs) {
+        const card = refsList.querySelector(`.pm-card-ref[data-reference-id="${ref.id}"]`);
+        if (card && card.dataset.generating === "true") continue;
+        if (ref.result_preview_url && ref.result_original_url) {
+            setRefResult(ref.id, ref.result_preview_url, ref.result_original_url);
+            setRefStatus(ref.id, "готово");
+        }
+    }
+}
+
+function getFriendlyFetchError(e) {
+    const msg = (e && e.message) || String(e);
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        return "Сетевая ошибка. Проверьте соединение или попробуйте позже.";
+    }
+    return msg;
+}
+
+function selectModel(modelValue) {
+    const grid = document.getElementById("pmModelGrid");
+    if (!grid) return;
+    grid.querySelectorAll(".pm-model-item").forEach((btn) => {
+        const isSelected = (btn.dataset.model || "") === (modelValue || "");
+        btn.classList.toggle("selected", !!isSelected);
+        btn.setAttribute("aria-pressed", isSelected);
+    });
+}
+
+async function loadModels() {
+    const grid = document.getElementById("pmModelGrid");
+    if (!grid) return;
+    try {
+        const res = await fetch("/api/models");
+        const data = await res.json().catch(() => ({}));
+        const items = data.items || [];
+        grid.innerHTML = "";
+        const noneBtn = document.createElement("button");
+        noneBtn.type = "button";
+        noneBtn.className = "pm-model-item pm-model-item-none selected";
+        noneBtn.dataset.model = "";
+        noneBtn.setAttribute("aria-pressed", "true");
+        noneBtn.innerHTML = '<img class="pm-model-thumb" src="/static/img/model-empty.svg" alt="Без модели"><span class="pm-model-name">Без модели</span>';
+        noneBtn.addEventListener("click", () => selectModel(""));
+        grid.appendChild(noneBtn);
+        for (const m of items) {
+            const id = m.filename || m.id;
+            const url = m.url || `/media/models/${id}`;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "pm-model-item";
+            btn.dataset.model = id;
+            btn.setAttribute("aria-pressed", "false");
+            const thumb = document.createElement("img");
+            thumb.className = "pm-model-thumb";
+            thumb.src = url;
+            thumb.alt = id;
+            thumb.loading = "lazy";
+            const name = document.createElement("span");
+            name.className = "pm-model-name";
+            name.textContent = id.length > 14 ? id.slice(0, 11) + "…" : id;
+            btn.appendChild(thumb);
+            btn.appendChild(name);
+            btn.addEventListener("click", () => selectModel(id));
+            grid.appendChild(btn);
+        }
+    } catch (e) {
+        console.error("Failed to load models:", e);
+    }
 }
 
 function renderInitial() {
@@ -425,6 +521,8 @@ function renderInitial() {
     if (initialReferences.some(isPromptPending)) {
         startPollingForPrompts();
     }
+    loadModels();
+    refreshReferencesFromApi().then(applyRefResultsFromApi);
 }
 
 async function uploadReferences() {
@@ -504,6 +602,7 @@ function setRefResult(referenceId, previewUrl, originalUrl) {
     if (!card) return;
     const empty = card.querySelector(".pm-ref-result-empty");
     const img = card.querySelector(".pm-ref-result-img");
+    const downloadBtn = card.querySelector(".pm-ref-download");
 
     if (empty) empty.style.display = "none";
     if (img) {
@@ -511,12 +610,29 @@ function setRefResult(referenceId, previewUrl, originalUrl) {
         img.dataset.fullsrc = originalUrl;
         img.style.display = "block";
     }
+    if (downloadBtn && originalUrl) {
+        downloadBtn.dataset.originalUrl = originalUrl;
+        downloadBtn.style.display = "";
+    }
+}
+
+function downloadResult(url, referenceId) {
+    const ext = (url.match(/\.(png|jpg|jpeg|webp)(\?|$)/i) || [])[1] || "png";
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `photomaker-${referenceId}.${ext}`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
 }
 
 function getSelectedStyles() {
     const baseStyle = document.querySelector('input[name="pmBaseStyle"]:checked')?.value || "base";
     const torsoStyle = document.querySelector('input[name="pmTorsoStyle"]:checked')?.value || "chest";
-    return { baseStyle, torsoStyle };
+    const selectedItem = document.querySelector(".pm-model-item.selected");
+    const model = selectedItem?.dataset.model || "";
+    return { baseStyle, torsoStyle, model };
 }
 
 async function regeneratePrompt(referenceId, promptBtn, card) {
@@ -572,6 +688,10 @@ function startResultElapsedTimer(referenceIds, onTick) {
 async function regenerateReference(referenceId, regenBtn) {
     if (!projectId) return;
 
+    const card = refsList?.querySelector(`.pm-card-ref[data-reference-id="${referenceId}"]`);
+    if (card) card.dataset.generating = "true";
+    stopPolling();
+
     const btn = regenBtn;
     const oldText = btn ? btn.textContent : "";
     if (btn) {
@@ -584,11 +704,11 @@ async function regenerateReference(referenceId, regenBtn) {
     });
 
     try {
-        const { baseStyle, torsoStyle } = getSelectedStyles();
+        const { baseStyle, torsoStyle, model } = getSelectedStyles();
         const res = await fetch(`/api/projects/${projectId}/references/${referenceId}/regenerate`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ base_style: baseStyle, torso_style: torsoStyle }),
+            body: JSON.stringify({ base_style: baseStyle, torso_style: torsoStyle, model }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Regenerate failed");
@@ -605,57 +725,109 @@ async function regenerateReference(referenceId, regenBtn) {
         }
     } catch (e) {
         console.error(e);
-        setRefStatus(referenceId, "ошибка", e.message || String(e));
+        setRefStatus(referenceId, "ошибка", getFriendlyFetchError(e));
     } finally {
         stopTimer();
+        if (card) delete card.dataset.generating;
         if (btn) {
-            btn.disabled = false;
+            btn.disabled = card?.dataset.hasPrompt !== "true";
             btn.textContent = oldText || "Перегенерировать";
         }
+        if (initialReferences.some(isPromptPending)) startPollingForPrompts();
     }
+}
+
+function delay(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+function randomBetween(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 async function generateAll() {
     if (!projectId) return;
     genBtn.disabled = true;
+    stopPolling();
 
     const cards = refsList.querySelectorAll(".pm-card-ref[data-reference-id]");
     const refIds = Array.from(cards).map((c) => c.dataset.referenceId).filter(Boolean);
-    const stopTimer = startResultElapsedTimer(refIds, (sec) => {
-        setStatus(genStatus, `Генерация... (${sec} сек)`, true);
-        refIds.forEach((id) => setRefStatus(id, `ожидание (${sec} сек с момента отправки)`));
-    });
+    cards.forEach((c) => { c.dataset.generating = "true"; });
+
+    const { baseStyle, torsoStyle, model } = getSelectedStyles();
+    const MAX_CONCURRENT = 10;
+    const STAGGER_MIN = 1000;
+    const STAGGER_MAX = 3000;
+    let completed = 0;
+    const refTimers = {};
+
+    const startTimerForRef = (refId) => {
+        const start = Date.now();
+        refTimers[refId] = setInterval(() => {
+            const sec = Math.floor((Date.now() - start) / 1000);
+            setRefStatus(refId, `ожидание (${sec} сек с момента отправки)`);
+        }, 1000);
+    };
+    const stopTimerForRef = (refId) => {
+        if (refTimers[refId]) {
+            clearInterval(refTimers[refId]);
+            delete refTimers[refId];
+        }
+    };
+
+    const processRef = async (refId) => {
+        await delay(randomBetween(STAGGER_MIN, STAGGER_MAX));
+        startTimerForRef(refId);
+        try {
+            const res = await fetch(`/api/projects/${projectId}/references/${refId}/regenerate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ base_style: baseStyle, torso_style: torsoStyle, model }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || "Ошибка генерации");
+
+            if (data.status === "completed") {
+                setRefStatus(refId, "готово");
+                if (data.preview_url && data.original_url) {
+                    setRefResult(refId, data.preview_url, data.original_url);
+                }
+            } else if (data.status === "failed") {
+                setRefStatus(refId, "ошибка", data.error_message || "Ошибка генерации");
+            } else {
+                setRefStatus(refId, data.status || "неизвестно", data.error_message || "");
+            }
+        } catch (e) {
+            console.error(e);
+            setRefStatus(refId, "ошибка", getFriendlyFetchError(e));
+        } finally {
+            stopTimerForRef(refId);
+            completed++;
+            setStatus(genStatus, `Генерация ${completed}/${refIds.length}...`, true);
+        }
+    };
 
     try {
-        const { baseStyle, torsoStyle } = getSelectedStyles();
-
-        const res = await fetch(`/api/projects/${projectId}/generate`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ base_style: baseStyle, torso_style: torsoStyle }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || "Generate failed");
-
-        const items = data.items || [];
-        for (const job of items) {
-            if (job.status === "completed") {
-                setRefStatus(job.reference_id, "готово");
-                setRefResult(job.reference_id, job.preview_url, job.original_url);
-            } else if (job.status === "failed") {
-                setRefStatus(job.reference_id, "ошибка", job.error_message || "");
-            } else {
-                setRefStatus(job.reference_id, job.status || "неизвестно", job.error_message || "");
+        let nextIdx = 0;
+        const runWorker = async () => {
+            while (nextIdx < refIds.length) {
+                const refId = refIds[nextIdx++];
+                await processRef(refId);
             }
-        }
+        };
+        const workers = Array(Math.min(MAX_CONCURRENT, refIds.length))
+            .fill()
+            .map(() => runWorker());
+        await Promise.all(workers);
 
-        setStatus(genStatus, "Готово", true);
+        setStatus(genStatus, `Готово (${completed}/${refIds.length})`, true);
     } catch (e) {
         console.error(e);
-        setStatus(genStatus, e.message || String(e), true);
+        setStatus(genStatus, getFriendlyFetchError(e), true);
     } finally {
-        stopTimer();
+        Object.keys(refTimers).forEach(stopTimerForRef);
+        cards.forEach((c) => delete c.dataset.generating);
         genBtn.disabled = false;
+        if (initialReferences.some(isPromptPending)) startPollingForPrompts();
         setTimeout(() => setStatus(genStatus, "", false), 3000);
     }
 }

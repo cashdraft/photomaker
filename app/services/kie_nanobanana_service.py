@@ -56,19 +56,21 @@ def _build_prompt(
     reference_prompt: str,
     base_style: str = "base",
     torso_style: str = "chest",
+    model: str = "",
     master_template: str | None = None,
 ) -> str:
-    """Собирает итоговый промпт: мастерпромт + промпт референса."""
+    """Собирает итоговый промпт: мастерпромт + промпт референса + модель."""
     template = master_template or current_app.config.get(
         "KIE_MASTER_PROMPT",
         "Marketplace product photo. Fit: {base_style}. Print placement: {torso_style}. "
         "Generate a photorealistic image of a model wearing this print. "
-        "Scene description: {reference_prompt}",
+        "Scene: {reference_prompt}. Model: {model}",
     )
     return template.format(
         base_style=base_style,
         torso_style=torso_style,
         reference_prompt=reference_prompt or "professional photo, neutral background",
+        model=model or "",
     ).strip()
 
 
@@ -133,6 +135,8 @@ def generate_image(
     reference_path: Path,
     base_style: str = "base",
     torso_style: str = "chest",
+    model_path: Path | None = None,
+    model_name: str = "",
     master_template: str | None = None,
     out_path: Path | None = None,
 ) -> str:
@@ -144,6 +148,8 @@ def generate_image(
     :param reference_path: путь к файлу референса на диске
     :param base_style: base | oversize (из блоков База/Оверсайз)
     :param torso_style: chest | back | both (из блоков Грудь/Спина/Оба)
+    :param model_path: путь к фото модели (если выбрана)
+    :param model_name: имя модели для промпта {model}
     :return: URL сгенерированного изображения
     """
     if not shirt_path.exists():
@@ -151,12 +157,19 @@ def generate_image(
     if not reference_path.exists():
         raise FileNotFoundError(f"Референс не найден: {reference_path}")
 
-    logger.info("Uploading images to Kie via base64: shirt=%s, ref=%s", shirt_path.name, reference_path.name)
+    image_input = []
+    if model_path and model_path.exists():
+        logger.info("Uploading images to Kie: model=%s, shirt=%s, ref=%s", model_path.name, shirt_path.name, reference_path.name)
+        model_url = _upload_file_base64(model_path, "photomaker/model", "model.jpg")
+        image_input.append(model_url)
+    else:
+        logger.info("Uploading images to Kie: shirt=%s, ref=%s", shirt_path.name, reference_path.name)
+
     shirt_url = _upload_file_base64(shirt_path, "photomaker/shirt", "shirt.png")
     ref_url = _upload_file_base64(reference_path, "photomaker/ref", "ref.jpg")
-    image_input = [shirt_url, ref_url]
-    prompt = _build_prompt(reference_prompt, base_style, torso_style, master_template)
-    logger.info("Creating Kie task, prompt length=%d", len(prompt))
+    image_input.extend([shirt_url, ref_url])
+    prompt = _build_prompt(reference_prompt, base_style, torso_style, model_name, master_template)
+    logger.info("Kie Nano Banana prompt: %r", prompt)
 
     task_id = _create_task(prompt, image_input)
     logger.info("Kie task created: %s", task_id)

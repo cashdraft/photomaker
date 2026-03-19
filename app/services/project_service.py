@@ -216,9 +216,34 @@ def regenerate_prompt_for_reference(project_id: str, reference_id: str) -> Refer
 
 def list_references(project_id: str) -> List[Reference]:
     db = _get_db_session()
-    return list(
+    refs = list(
         Reference.query.filter_by(project_id=project_id).order_by(Reference.created_at.desc()).all()
     )
+    sync_refs_from_jobs(project_id, refs, db)
+    return refs
+
+
+def sync_refs_from_jobs(project_id: str, refs: List[Reference], db) -> None:
+    """Синхронизирует result_* в Reference из GenerationJob для ref без результата."""
+    for ref in refs:
+        if getattr(ref, "result_preview_rel_path", None):
+            continue
+        job = (
+            GenerationJob.query.filter_by(
+                project_id=project_id, reference_id=ref.id, status="completed"
+            )
+            .filter(GenerationJob.result_preview_rel_path.isnot(None))
+            .order_by(GenerationJob.created_at.desc())
+            .first()
+        )
+        if job and job.result_preview_rel_path:
+            try:
+                ref.result_preview_rel_path = job.result_preview_rel_path
+                ref.result_original_rel_path = job.result_original_rel_path
+                db.add(ref)
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
 
 
 def get_latest_result_for_reference(project_id: str, reference_id: str) -> dict | None:
@@ -258,6 +283,7 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
     options = options or {}
     base_style = options.get("base_style", "base")
     torso_style = options.get("torso_style", "chest")
+    model_filename = options.get("model") or ""
 
     app = current_app
     db = _get_db_session()
@@ -269,6 +295,11 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
     shirt_path = Path(app.config["SHIRTS_DIR"]) / project.shirt_filename
     if not shirt_path.exists():
         raise ValueError("Shirt file not found on server")
+
+    model_path = None
+    if model_filename:
+        from app.services.model_service import get_model_path
+        model_path = get_model_path(model_filename)
 
     refs: List[Reference] = list(
         Reference.query.filter_by(project_id=project_id).order_by(Reference.created_at.asc()).all()
@@ -289,6 +320,10 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
         )
         is_kie_result = existing and existing.result_original_rel_path and existing.result_original_rel_path.endswith(".png")
         if existing and existing.result_preview_rel_path and is_kie_result:
+            ref.result_preview_rel_path = existing.result_preview_rel_path
+            ref.result_original_rel_path = existing.result_original_rel_path
+            db.add(ref)
+            db.commit()
             jobs_out.append(
                 {
                     "job_id": existing.id,
@@ -339,6 +374,8 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
                 reference_path=reference_original_path,
                 base_style=base_style,
                 torso_style=torso_style,
+                model_path=model_path,
+                model_name=Path(model_filename).stem if model_filename else "",
                 out_path=out_original_path,
             )
             make_preview_image(out_original_path, out_preview_path)
@@ -347,7 +384,10 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
             job.result_original_rel_path = f"{project_id}/{out_original_path.name}"
             job.result_preview_rel_path = f"{project_id}/{out_preview_path.name}"
             job.error_message = None
+            ref.result_preview_rel_path = job.result_preview_rel_path
+            ref.result_original_rel_path = job.result_original_rel_path
             db.add(job)
+            db.add(ref)
             db.commit()
 
             jobs_out.append(
@@ -389,6 +429,7 @@ def generate_demo_results_for_reference(
     options = options or {}
     base_style = options.get("base_style", "base")
     torso_style = options.get("torso_style", "chest")
+    model_filename = options.get("model") or ""
 
     app = current_app
     db = _get_db_session()
@@ -400,6 +441,11 @@ def generate_demo_results_for_reference(
     shirt_path = Path(app.config["SHIRTS_DIR"]) / project.shirt_filename
     if not shirt_path.exists():
         raise ValueError("Shirt file not found on server")
+
+    model_path = None
+    if model_filename:
+        from app.services.model_service import get_model_path
+        model_path = get_model_path(model_filename)
 
     ref: Reference | None = db.get(Reference, reference_id)  # type: ignore[arg-type]
     if not ref or ref.project_id != project_id:
@@ -415,6 +461,10 @@ def generate_demo_results_for_reference(
         )
         is_kie_result = existing and existing.result_original_rel_path and existing.result_original_rel_path.endswith(".png")
         if existing and existing.result_preview_rel_path and existing.result_original_rel_path and is_kie_result:
+            ref.result_preview_rel_path = existing.result_preview_rel_path
+            ref.result_original_rel_path = existing.result_original_rel_path
+            db.add(ref)
+            db.commit()
             return {
                 "job_id": existing.id,
                 "reference_id": reference_id,
@@ -462,6 +512,8 @@ def generate_demo_results_for_reference(
             reference_path=reference_original_path,
             base_style=base_style,
             torso_style=torso_style,
+            model_path=model_path,
+            model_name=Path(model_filename).stem if model_filename else "",
             out_path=out_original_path,
         )
         make_preview_image(out_original_path, out_preview_path)
@@ -470,7 +522,10 @@ def generate_demo_results_for_reference(
         job.result_original_rel_path = f"{project_id}/{out_original_path.name}"
         job.result_preview_rel_path = f"{project_id}/{out_preview_path.name}"
         job.error_message = None
+        ref.result_preview_rel_path = job.result_preview_rel_path
+        ref.result_original_rel_path = job.result_original_rel_path
         db.add(job)
+        db.add(ref)
         db.commit()
 
         return {

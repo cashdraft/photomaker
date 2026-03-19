@@ -44,6 +44,10 @@ def load_config(app: Flask) -> None:
         "RESULTS_PREVIEW_DIR", str(BASE_DIR / "data" / "results" / "preview")
     )
 
+    app.config["MODELS_DIR"] = os.getenv(
+        "MODELS_DIR", str(BASE_DIR / "data" / "models")
+    )
+
     # Yandex Disk
     app.config["YANDEX_DISK_TOKEN"] = os.getenv("YANDEX_DISK_TOKEN", "")
     app.config["YANDEX_DISK_REMOTE_PATH"] = os.getenv(
@@ -69,6 +73,6 @@ def load_config(app: Flask) -> None:
         "KIE_MASTER_PROMPT",
         "Marketplace product photo. Fit: {base_style}. Print placement: {torso_style}. "
         "Generate a photorealistic image of a model wearing this print. "
-        "Scene: {reference_prompt}",
+        "Scene: {reference_prompt}. Model: {model}",
     )
 

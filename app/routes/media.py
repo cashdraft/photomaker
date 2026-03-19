@@ -40,3 +40,8 @@ def results_preview(rel_path: str):
 def results_original(rel_path: str):
     return _send("RESULTS_ORIGINAL_DIR", rel_path)
 
+
+@bp.get("/models/<path:filename>")
+def models_file(filename: str):
+    return _send("MODELS_DIR", filename)
+
