@@ -12,6 +12,7 @@ from app.services.project_service import (
     create_project_and_save,
     generate_demo_results,
     generate_demo_results_for_reference,
+    get_latest_result_for_reference,
     list_references,
 )
 from app.services.shirt_service import list_shirts
@@ -21,15 +22,25 @@ from app.utils.image_utils import make_preview_image
 bp = Blueprint("api", __name__, url_prefix="/api")
 
 
-def _ref_to_json(ref: Reference) -> Dict[str, Any]:
-    return {
+def _ref_to_json(ref: Reference, project_id: str | None = None) -> Dict[str, Any]:
+    prompt_started = getattr(ref, "prompt_started_at", None)
+    out = {
         "id": ref.id,
         "preview_url": f"/media/references/preview/{ref.preview_rel_path}",
         "original_url": f"/media/references/original/{ref.original_rel_path}",
         "mime_type": ref.mime_type,
         "file_hash": ref.file_hash,
-        "created_at": ref.created_at.isoformat(),
+        "generated_prompt": ref.generated_prompt,
+        "prompt_error": ref.prompt_error,
+        "created_at": (ref.created_at.isoformat() + "Z") if ref.created_at else None,
+        "prompt_started_at": (prompt_started.isoformat() + "Z") if prompt_started else None,
     }
+    if project_id:
+        result = get_latest_result_for_reference(project_id, ref.id)
+        if result:
+            out["result_preview_url"] = result["preview_url"]
+            out["result_original_url"] = result["original_url"]
+    return out
 
 
 @bp.get("/shirts")
@@ -146,7 +157,7 @@ def projects_delete(project_id: str):
 @bp.get("/projects/<project_id>/references")
 def references_list(project_id: str):
     refs = list_references(project_id)
-    return jsonify({"items": [_ref_to_json(r) for r in refs]})
+    return jsonify({"items": [_ref_to_json(r, project_id) for r in refs]})
 
 
 @bp.post("/projects/<project_id>/references")
@@ -160,7 +171,7 @@ def references_upload(project_id: str):
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
-    return jsonify({"items": [_ref_to_json(r) for r in refs]})
+    return jsonify({"items": [_ref_to_json(r, project_id) for r in refs]})
 
 
 @bp.post("/projects/<project_id>/generate")
@@ -178,6 +189,19 @@ def projects_generate(project_id: str):
         return jsonify({"error": str(e)}), 400
 
     return jsonify({"items": jobs_out})
+
+
+@bp.post("/projects/<project_id>/references/<reference_id>/regenerate-prompt")
+def references_regenerate_prompt(project_id: str, reference_id: str):
+    from app.services.project_service import regenerate_prompt_for_reference
+
+    try:
+        ref = regenerate_prompt_for_reference(project_id, reference_id)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    if not ref:
+        return jsonify({"error": "Reference not found"}), 404
+    return jsonify(_ref_to_json(ref, project_id))
 
 
 @bp.post("/projects/<project_id>/references/<reference_id>/regenerate")

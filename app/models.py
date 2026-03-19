@@ -39,6 +39,11 @@ class Reference(db.Model):
     file_hash = db.Column(db.String(64), nullable=False, index=True)
     mime_type = db.Column(db.String(128), nullable=True)
 
+    # Промпт, сгенерированный OpenAI по картинке (мастерпромпт + изображение)
+    generated_prompt = db.Column(db.Text, nullable=True)
+    prompt_error = db.Column(db.Text, nullable=True)
+    prompt_started_at = db.Column(db.DateTime, nullable=True)  # когда последний раз запускали генерацию промпта
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 

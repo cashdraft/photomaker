@@ -56,6 +56,14 @@ function updateRefsCount() {
     refsCountEl.textContent = `Референсов: ${n}`;
 }
 
+function updateGenerateButtonState() {
+    if (!genBtn || !refsList) return;
+    const cards = refsList.querySelectorAll('.pm-card-ref[data-reference-id]');
+    const total = cards.length;
+    const allHavePrompt = total > 0 && Array.from(cards).every((c) => c.dataset.hasPrompt === "true");
+    genBtn.disabled = !allHavePrompt;
+}
+
 let modalImages = [];
 let modalImageIndex = -1;
 
@@ -142,15 +150,97 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowRight") navigateImage(1);
 });
 
+function getPromptStatusHtml(ref) {
+    if (ref.generated_prompt) {
+        const escaped = escapeHtml(ref.generated_prompt).replace(/"/g, "&quot;");
+        return 'Промпт готов — <span class="pm-prompt-copy" title="' + escaped + '" data-prompt="' + escaped + '" role="button" tabindex="0">Promt</span>';
+    }
+    return getPromptStatusText(ref, null);
+}
+
+function getPromptStatusText(ref, elapsedSec) {
+    if (ref.generated_prompt) return "Промпт готов — Promt";
+    if (ref.prompt_error) return "Ошибка: " + (ref.prompt_error.length > 120 ? ref.prompt_error.slice(0, 120) + "…" : ref.prompt_error);
+    if (elapsedSec != null && elapsedSec >= 0) {
+        if (elapsedSec < 3) return "Отправка в OpenAI…";
+        if (elapsedSec > 3600) return "Ожидание ответа OpenAI…";
+        return "Ожидание ответа OpenAI (" + elapsedSec + " сек)";
+    }
+    return "Ожидание ответа OpenAI…";
+}
+
+function hasPrompt(ref) {
+    return !!ref.generated_prompt;
+}
+
+function isPromptPending(ref) {
+    return !ref.generated_prompt && !ref.prompt_error;
+}
+
+const elapsedIntervals = {};
+
+function stopElapsedForCard(refId) {
+    const id = elapsedIntervals[refId];
+    if (id) {
+        clearInterval(id);
+        delete elapsedIntervals[refId];
+    }
+}
+
+function getElapsedSecondsSince(createdAtIso, promptStartedAtIso) {
+    const iso = promptStartedAtIso || createdAtIso;
+    if (!iso) return 0;
+    let str = iso;
+    if (!/Z$/.test(str) && !/[+-]\d{2}:\d{2}$/.test(str)) str = str + "Z";
+    const created = new Date(str).getTime();
+    if (isNaN(created)) return 0;
+    const sec = Math.floor((Date.now() - created) / 1000);
+    return Math.max(0, Math.min(sec, 3600));
+}
+
+function startElapsedForCard(card, refId, createdAtIso, promptStartedAtIso) {
+    stopElapsedForCard(refId);
+    const statusEl = card.querySelector(".pm-ref-prompt-status");
+    if (!statusEl) return;
+    let sec = getElapsedSecondsSince(createdAtIso, promptStartedAtIso);
+    statusEl.textContent = getPromptStatusText({ generated_prompt: null, prompt_error: null }, sec);
+    const id = setInterval(() => {
+        sec++;
+        statusEl.textContent = getPromptStatusText({ generated_prompt: null, prompt_error: null }, sec);
+    }, 1000);
+    elapsedIntervals[refId] = id;
+}
+
+function escapeHtml(s) {
+    if (!s) return "";
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+}
+
 function renderReferenceCard(ref) {
+    const promptStatusText = getPromptStatusText(ref, isPromptPending(ref) ? 0 : null);
+    const hasPromptVal = hasPrompt(ref);
+    const promptStatusHtml = hasPromptVal && ref.generated_prompt
+        ? getPromptStatusHtml(ref)
+        : promptStatusText;
+    const hasResult = !!(ref.result_preview_url && ref.result_original_url);
+    const resultStatusText = hasResult ? "Результат: готово" : "Результат: ожидание";
+    const emptyStyle = hasResult ? "display:none;" : "";
+    const resultImgStyle = hasResult ? "" : "display:none;";
+    const resultPreview = ref.result_preview_url || "";
+    const resultOriginal = ref.result_original_url || "";
+
     const card = document.createElement("div");
     card.className = "pm-card pm-card-ref";
     card.dataset.referenceId = ref.id;
+    card.dataset.hasPrompt = hasPromptVal ? "true" : "false";
 
     card.innerHTML = `
         <div class="pm-ref-meta-top">
             <div class="pm-card-title">reference: ${ref.id}</div>
-            <div class="pm-muted pm-ref-status">Статус: ожидание</div>
+            <div class="pm-muted pm-ref-prompt-status">${promptStatusHtml}</div>
+            <div class="pm-muted pm-ref-status">${resultStatusText}</div>
             <div class="pm-muted pm-ref-error" style="display:none;margin-top:6px;"></div>
         </div>
 
@@ -167,21 +257,26 @@ function renderReferenceCard(ref) {
             </div>
             <div class="pm-ref-col">
                 <div class="pm-muted pm-ref-col-title">Результат</div>
-                <div class="pm-ref-result-empty">Результат пока не готов</div>
+                <div class="pm-ref-result-empty" style="${emptyStyle}">Результат пока не готов</div>
                 <img
                     class="pm-card-img pm-ref-pair-img pm-ref-result-img"
-                    src=""
+                    src="${resultPreview}"
                     alt="Результат"
-                    data-fullsrc=""
+                    data-fullsrc="${resultOriginal}"
                     loading="lazy"
-                    style="display:none;"
+                    style="${resultImgStyle}"
                 >
             </div>
         </div>
 
-        <button class="pm-btn pm-btn-secondary pm-ref-regenerate" type="button" data-reference-id="${ref.id}">
-            Перегенерировать
-        </button>
+        <div class="pm-ref-buttons">
+            <button class="pm-btn pm-btn-secondary pm-ref-regenerate-prompt" type="button" data-reference-id="${ref.id}">
+                Промпт
+            </button>
+            <button class="pm-btn pm-btn-secondary pm-ref-regenerate" type="button" data-reference-id="${ref.id}">
+                Перегенерировать
+            </button>
+        </div>
     `;
 
     const originalImg = card.querySelector(".pm-ref-original-img");
@@ -205,7 +300,119 @@ function renderReferenceCard(ref) {
         regenBtn.addEventListener("click", () => regenerateReference(ref.id, regenBtn));
     }
 
+    const promptBtn = card.querySelector(".pm-ref-regenerate-prompt");
+    if (promptBtn) {
+        promptBtn.addEventListener("click", () => regeneratePrompt(ref.id, promptBtn, card));
+    }
+
+    const promptCopySpan = card.querySelector(".pm-prompt-copy");
+    if (promptCopySpan) {
+        promptCopySpan.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyPromptToClipboard(promptCopySpan); });
+        promptCopySpan.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copyPromptToClipboard(promptCopySpan); } });
+    }
+
     refsList.appendChild(card);
+
+    if (isPromptPending(ref)) {
+        startElapsedForCard(card, ref.id, ref.created_at, ref.prompt_started_at);
+    }
+}
+
+function copyPromptToClipboard(span) {
+    const text = span.getAttribute("data-prompt");
+    if (!text) return;
+    const done = () => {
+        const orig = span.textContent;
+        span.textContent = "Скопировано!";
+        setTimeout(() => { span.textContent = orig; }, 800);
+    };
+    if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => {
+            fallbackCopy(text, done);
+        });
+    } else {
+        fallbackCopy(text, done);
+    }
+}
+
+function fallbackCopy(text, onDone) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+        if (document.execCommand("copy")) onDone();
+    } finally {
+        document.body.removeChild(ta);
+    }
+}
+
+function setupPromptCopyHandler(card) {
+    const span = card.querySelector(".pm-prompt-copy");
+    if (!span) return;
+    span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyPromptToClipboard(span); });
+    span.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copyPromptToClipboard(span); } });
+}
+
+function updateCardPromptStatus(card, ref) {
+    const refId = card.dataset.referenceId;
+    stopElapsedForCard(refId);
+    const statusEl = card.querySelector(".pm-ref-prompt-status");
+    if (!statusEl) return;
+    const content = hasPrompt(ref) && ref.generated_prompt ? getPromptStatusHtml(ref) : getPromptStatusText(ref);
+    statusEl.innerHTML = content;
+    card.dataset.hasPrompt = hasPrompt(ref) ? "true" : "false";
+    if (ref.prompt_error) {
+        statusEl.classList.add("pm-ref-prompt-error");
+    } else {
+        statusEl.classList.remove("pm-ref-prompt-error");
+    }
+    if (hasPrompt(ref) && ref.generated_prompt) {
+        setupPromptCopyHandler(card);
+    }
+}
+
+function refreshReferencesFromApi() {
+    if (!projectId || !refsList) return Promise.resolve([]);
+    return fetch(`/api/projects/${projectId}/references`)
+        .then((r) => r.json())
+        .then((data) => data.items || [])
+        .catch(() => []);
+}
+
+let pollIntervalId = null;
+
+function stopPolling() {
+    if (pollIntervalId) {
+        clearInterval(pollIntervalId);
+        pollIntervalId = null;
+    }
+}
+
+function startPollingForPrompts() {
+    stopPolling();
+    function poll() {
+        refreshReferencesFromApi().then((refs) => {
+            if (!refs || refs.length === 0) return;
+            let anyPending = false;
+            for (const ref of refs) {
+                const card = refsList.querySelector(`.pm-card-ref[data-reference-id="${ref.id}"]`);
+                if (!card) continue;
+                if (isPromptPending(ref)) {
+                    anyPending = true;
+                } else {
+                    updateCardPromptStatus(card, ref);
+                }
+            }
+            updateGenerateButtonState();
+            if (!anyPending) stopPolling();
+        });
+    }
+    poll();
+    pollIntervalId = setInterval(poll, 2500);
 }
 
 function renderInitial() {
@@ -214,6 +421,10 @@ function renderInitial() {
         renderReferenceCard(ref);
     }
     updateRefsCount();
+    updateGenerateButtonState();
+    if (initialReferences.some(isPromptPending)) {
+        startPollingForPrompts();
+    }
 }
 
 async function uploadReferences() {
@@ -235,7 +446,7 @@ async function uploadFiles(files) {
     const form = new FormData();
     for (const f of files) form.append("files", f);
 
-    setStatus(uploadStatus, "Загрузка...", true);
+    setStatus(uploadStatus, "Загрузка файлов...", true);
     uploadBtn.disabled = true;
 
     try {
@@ -256,7 +467,11 @@ async function uploadFiles(files) {
         refFilesInput.value = "";
         updateSelectedFilesInfo();
         updateRefsCount();
+        updateGenerateButtonState();
         setStatus(uploadStatus, "Готово", true);
+        if (items.some(isPromptPending)) {
+            startPollingForPrompts();
+        }
         setTimeout(() => setStatus(uploadStatus, "", false), 1500);
     } catch (e) {
         console.error(e);
@@ -272,7 +487,7 @@ function setRefStatus(referenceId, status, errorMessage) {
     const statusEl = card.querySelector(".pm-ref-status");
     const errorEl = card.querySelector(".pm-ref-error");
 
-    if (statusEl) statusEl.textContent = `Статус: ${status}`;
+    if (statusEl) statusEl.textContent = `Результат: ${status}`;
     if (errorEl) {
         if (errorMessage) {
             errorEl.textContent = errorMessage;
@@ -304,6 +519,56 @@ function getSelectedStyles() {
     return { baseStyle, torsoStyle };
 }
 
+async function regeneratePrompt(referenceId, promptBtn, card) {
+    if (!projectId) return;
+    const oldText = promptBtn ? promptBtn.textContent : "";
+    if (promptBtn) {
+        promptBtn.disabled = true;
+        promptBtn.textContent = "Генерируем…";
+    }
+    try {
+        const res = await fetch(`/api/projects/${projectId}/references/${referenceId}/regenerate-prompt`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Regenerate prompt failed");
+
+        card.dataset.hasPrompt = "false";
+        const statusEl = card.querySelector(".pm-ref-prompt-status");
+        if (statusEl) {
+            statusEl.textContent = "Отправка в OpenAI…";
+            statusEl.classList.remove("pm-ref-prompt-error");
+        }
+
+        startElapsedForCard(card, referenceId, data.created_at, data.prompt_started_at);
+        startPollingForPrompts();
+    } catch (e) {
+        console.error(e);
+        const statusEl = card.querySelector(".pm-ref-prompt-status");
+        if (statusEl) {
+            statusEl.textContent = "Ошибка: " + (e.message || String(e));
+            statusEl.classList.add("pm-ref-prompt-error");
+        }
+    } finally {
+        if (promptBtn) {
+            promptBtn.disabled = false;
+            promptBtn.textContent = oldText || "Промпт";
+        }
+    }
+}
+
+function startResultElapsedTimer(referenceIds, onTick) {
+    const start = Date.now();
+    const id = setInterval(() => {
+        const sec = Math.floor((Date.now() - start) / 1000);
+        onTick(sec);
+    }, 1000);
+    onTick(0);
+    return () => clearInterval(id);
+}
+
 async function regenerateReference(referenceId, regenBtn) {
     if (!projectId) return;
 
@@ -313,6 +578,10 @@ async function regenerateReference(referenceId, regenBtn) {
         btn.disabled = true;
         btn.textContent = "Перегенерируем...";
     }
+
+    const stopTimer = startResultElapsedTimer([referenceId], (sec) => {
+        setRefStatus(referenceId, `ожидание (${sec} сек с момента отправки)`);
+    });
 
     try {
         const { baseStyle, torsoStyle } = getSelectedStyles();
@@ -338,6 +607,7 @@ async function regenerateReference(referenceId, regenBtn) {
         console.error(e);
         setRefStatus(referenceId, "ошибка", e.message || String(e));
     } finally {
+        stopTimer();
         if (btn) {
             btn.disabled = false;
             btn.textContent = oldText || "Перегенерировать";
@@ -348,7 +618,13 @@ async function regenerateReference(referenceId, regenBtn) {
 async function generateAll() {
     if (!projectId) return;
     genBtn.disabled = true;
-    setStatus(genStatus, "Генерация...", true);
+
+    const cards = refsList.querySelectorAll(".pm-card-ref[data-reference-id]");
+    const refIds = Array.from(cards).map((c) => c.dataset.referenceId).filter(Boolean);
+    const stopTimer = startResultElapsedTimer(refIds, (sec) => {
+        setStatus(genStatus, `Генерация... (${sec} сек)`, true);
+        refIds.forEach((id) => setRefStatus(id, `ожидание (${sec} сек с момента отправки)`));
+    });
 
     try {
         const { baseStyle, torsoStyle } = getSelectedStyles();
@@ -378,6 +654,7 @@ async function generateAll() {
         console.error(e);
         setStatus(genStatus, e.message || String(e), true);
     } finally {
+        stopTimer();
         genBtn.disabled = false;
         setTimeout(() => setStatus(genStatus, "", false), 3000);
     }

@@ -831,6 +831,15 @@ p {
     gap: 6px;
 }
 
+.pm-ref-prompt-status {
+    font-size: 13px;
+}
+
+.pm-ref-prompt-error {
+    color: #dc2626 !important;
+    font-weight: 600;
+}
+
 .pm-ref-pair {
     display: flex;
     gap: 14px;
@@ -869,8 +878,28 @@ p {
     text-align: center;
 }
 
-.pm-ref-regenerate {
+.pm-ref-buttons {
+    display: flex;
+    gap: 10px;
     width: 100%;
+}
+
+.pm-ref-regenerate-prompt {
+    flex: 0 0 auto;
+}
+
+.pm-ref-regenerate {
+    flex: 1;
+}
+
+.pm-prompt-copy {
+    cursor: pointer;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+}
+
+.pm-prompt-copy:hover {
+    color: var(--pm-primary, #2563eb);
 }
 
 @media (max-width: 720px) {

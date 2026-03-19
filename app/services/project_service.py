@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import logging
 import mimetypes
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import IO, List, Tuple
 
 from flask import current_app
+
+logger = logging.getLogger(__name__)
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
 from app.models import GenerationJob, Project, Reference
+from app.services.openai_prompt_service import generate_prompt_for_image
 from app.utils.image_utils import (
     compute_file_hash,
-    make_demo_composite,
     make_preview_image,
 )
 
@@ -103,6 +108,8 @@ def _save_uploaded_reference(project_id: str, file: FileStorage) -> Reference:
 
 
 def add_references(project_id: str, files: List[FileStorage]) -> List[Reference]:
+    from datetime import datetime
+
     app = current_app
     if not files:
         return []
@@ -113,13 +120,98 @@ def add_references(project_id: str, files: List[FileStorage]) -> List[Reference]
         raise ValueError("Project not found")
 
     created: List[Reference] = []
+    refs_original_root = Path(app.config["REFERENCES_ORIGINAL_DIR"])
+    now = datetime.utcnow()
+
     for f in files:
         ref = _save_uploaded_reference(project_id, f)
+        ref.prompt_started_at = now
         db.add(ref)
         created.append(ref)
 
     db.commit()
+
+    # Асинхронная генерация промптов в фоне (параллельно по всем референсам)
+    ref_ids = [r.id for r in created]
+    flask_app = current_app._get_current_object()
+    logger.info("Запуск фоновой генерации промптов для %d референсов: %s", len(ref_ids), ref_ids)
+
+    def _process_with_context(ref_id: str):
+        with flask_app.app_context():
+            _process_prompt_for_ref(project_id, ref_id, refs_original_root)
+
+    def _bg_generate_prompts() -> None:
+        with ThreadPoolExecutor(max_workers=min(5, len(ref_ids))) as executor:
+            futures = {executor.submit(_process_with_context, rid): rid for rid in ref_ids}
+            for future in as_completed(futures):
+                ref_id = futures[future]
+                try:
+                    future.result()
+                    logger.info("Промпт получен для ref %s", ref_id)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("Ошибка генерации промпта для ref %s: %s", ref_id, e)
+
+    threading.Thread(target=_bg_generate_prompts, daemon=True).start()
+
     return created
+
+
+def _process_prompt_for_ref(
+    project_id: str, ref_id: str, refs_original_root: Path
+) -> None:
+    """Генерирует промпт для одного референса и обновляет БД."""
+    import time
+
+    t0 = time.monotonic()
+    logger.info("Начало генерации промпта для ref %s", ref_id)
+
+    db = _get_db_session()
+    ref: Reference | None = db.get(Reference, ref_id)  # type: ignore[arg-type]
+    if not ref or ref.project_id != project_id:
+        logger.warning("Ref %s не найден или не принадлежит проекту", ref_id)
+        return
+    original_path = refs_original_root / ref.original_rel_path
+    try:
+        prompt = generate_prompt_for_image(original_path)
+        ref.generated_prompt = prompt
+        ref.prompt_error = None
+        elapsed = time.monotonic() - t0
+        logger.info("OpenAI ответил для ref %s за %.1f сек, длина промпта: %d", ref_id, elapsed, len(prompt or ""))
+    except Exception as e:  # noqa: BLE001
+        elapsed = time.monotonic() - t0
+        logger.warning("OpenAI ошибка для ref %s после %.1f сек: %s", ref_id, elapsed, e)
+        ref.generated_prompt = None
+        ref.prompt_error = str(e)[:500]
+    finally:
+        db.add(ref)
+        db.commit()
+
+
+def regenerate_prompt_for_reference(project_id: str, reference_id: str) -> Reference | None:
+    """Запускает повторную генерацию промпта для референса. Возвращает ref или None."""
+    from datetime import datetime
+
+    app = current_app
+    db = _get_db_session()
+    ref: Reference | None = Reference.query.filter_by(id=reference_id, project_id=project_id).first()
+    if not ref:
+        return None
+
+    ref.generated_prompt = None
+    ref.prompt_error = None
+    ref.prompt_started_at = datetime.utcnow()
+    db.add(ref)
+    db.commit()
+
+    refs_original_root = Path(app.config["REFERENCES_ORIGINAL_DIR"])
+    flask_app = current_app._get_current_object()
+
+    def _process_with_context():
+        with flask_app.app_context():
+            _process_prompt_for_ref(project_id, reference_id, refs_original_root)
+
+    threading.Thread(target=_process_with_context, daemon=True).start()
+    return ref
 
 
 def list_references(project_id: str) -> List[Reference]:
@@ -129,19 +221,44 @@ def list_references(project_id: str) -> List[Reference]:
     )
 
 
+def get_latest_result_for_reference(project_id: str, reference_id: str) -> dict | None:
+    """Возвращает последний успешный результат для референса или None."""
+    job = (
+        GenerationJob.query.filter_by(
+            project_id=project_id, reference_id=reference_id, status="completed"
+        )
+        .filter(GenerationJob.result_preview_rel_path.isnot(None))
+        .order_by(GenerationJob.created_at.desc())
+        .first()
+    )
+    if not job or not job.result_preview_rel_path:
+        return None
+    return {
+        "preview_url": f"/media/results/preview/{job.result_preview_rel_path}",
+        "original_url": f"/media/results/original/{job.result_original_rel_path}",
+    }
+
+
 def _rel_to_media_url(media_base_path: str, rel_path: str) -> str:
     # rel_path is safe (we generate it from uuid)
     # media_base_path should be '/media/<kind>/<subdir>' in route.
     return f"{media_base_path}/{rel_path}"
 
 
+def _use_kie_for_generation() -> bool:
+    """Проверяет, настроен ли Kie.ai и можно ли его использовать."""
+    key = current_app.config.get("KIE_API_KEY", "")
+    return bool(key and not str(key).startswith("__PUT_"))
+
+
 def generate_demo_results(project_id: str, options: dict | None = None) -> List[dict]:
     """
-    Демо-генерация: накладываем уменьшенный принт (shirt image) на низ изображения-референса.
+    Генерация результатов: Kie.ai Nano Banana Pro (если настроен) или демо-композит.
     """
-    # options зарезервированы под реальный prompt/NanoBanana,
-    # в демо-режиме они пока не влияют на итог.
-    _ = options
+    options = options or {}
+    base_style = options.get("base_style", "base")
+    torso_style = options.get("torso_style", "chest")
+
     app = current_app
     db = _get_db_session()
 
@@ -162,7 +279,7 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
     jobs_out: List[dict] = []
 
     for ref in refs:
-        # reuse latest completed job (if any)
+        # reuse only Kie-результаты (.png); старые демо (.jpg) — перегенерируем
         existing = (
             GenerationJob.query.filter_by(
                 project_id=project_id, reference_id=ref.id, status="completed"
@@ -170,7 +287,8 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
             .order_by(GenerationJob.created_at.desc())
             .first()
         )
-        if existing and existing.result_preview_rel_path:
+        is_kie_result = existing and existing.result_original_rel_path and existing.result_original_rel_path.endswith(".png")
+        if existing and existing.result_preview_rel_path and is_kie_result:
             jobs_out.append(
                 {
                     "job_id": existing.id,
@@ -199,15 +317,31 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
             results_root.mkdir(parents=True, exist_ok=True)
             results_preview_root.mkdir(parents=True, exist_ok=True)
 
-            out_original_path = results_root / f"{job_id}.jpg"
+            if not _use_kie_for_generation():
+                raise ValueError(
+                    "KIE_API_KEY не задан. Укажите ключ Kie.ai в .env (https://kie.ai/api-key)"
+                )
+            if not ref.generated_prompt:
+                raise ValueError(
+                    f"У референса {ref.id} нет сгенерированного промпта. "
+                    "Дождитесь генерации или нажмите «Промпт» для перегенерации."
+                )
+
+            from app.services.kie_nanobanana_service import generate_image
+
+            ref_path = Path(app.config["REFERENCES_ORIGINAL_DIR"]) / ref.original_rel_path
+            out_original_path = results_root / f"{job_id}.png"
             out_preview_path = results_preview_root / f"{job_id}.jpg"
 
-            make_demo_composite(
-                reference_path=reference_original_path,
+            generate_image(
+                reference_prompt=ref.generated_prompt,
                 shirt_path=shirt_path,
-                out_original_path=out_original_path,
-                out_preview_path=out_preview_path,
+                reference_path=reference_original_path,
+                base_style=base_style,
+                torso_style=torso_style,
+                out_path=out_original_path,
             )
+            make_preview_image(out_original_path, out_preview_path)
 
             job.status = "completed"
             job.result_original_rel_path = f"{project_id}/{out_original_path.name}"
@@ -249,13 +383,12 @@ def generate_demo_results_for_reference(
     force: bool = False,
 ) -> dict:
     """
-    Демо-генерация только для одного reference.
-
+    Генерация результата для одного reference: Kie.ai или демо-композит.
     force=True создаёт новый job, а не переиспользует ранее completed-результат.
     """
-    # options зарезервированы под реальный prompt/NanoBanana,
-    # в демо-режиме они пока не влияют на итог.
-    _ = options
+    options = options or {}
+    base_style = options.get("base_style", "base")
+    torso_style = options.get("torso_style", "chest")
 
     app = current_app
     db = _get_db_session()
@@ -280,7 +413,8 @@ def generate_demo_results_for_reference(
             .order_by(GenerationJob.created_at.desc())
             .first()
         )
-        if existing and existing.result_preview_rel_path and existing.result_original_rel_path:
+        is_kie_result = existing and existing.result_original_rel_path and existing.result_original_rel_path.endswith(".png")
+        if existing and existing.result_preview_rel_path and existing.result_original_rel_path and is_kie_result:
             return {
                 "job_id": existing.id,
                 "reference_id": reference_id,
@@ -306,15 +440,31 @@ def generate_demo_results_for_reference(
         results_root.mkdir(parents=True, exist_ok=True)
         results_preview_root.mkdir(parents=True, exist_ok=True)
 
-        out_original_path = results_root / f"{job_id}.jpg"
+        if not _use_kie_for_generation():
+            raise ValueError(
+                "KIE_API_KEY не задан. Укажите ключ Kie.ai в .env (https://kie.ai/api-key)"
+            )
+        if not ref.generated_prompt:
+            raise ValueError(
+                f"У референса {reference_id} нет сгенерированного промпта. "
+                "Дождитесь генерации или нажмите «Промпт» для перегенерации."
+            )
+
+        from app.services.kie_nanobanana_service import generate_image
+
+        shirt_path = Path(app.config["SHIRTS_DIR"]) / project.shirt_filename
+        out_original_path = results_root / f"{job_id}.png"
         out_preview_path = results_preview_root / f"{job_id}.jpg"
 
-        make_demo_composite(
-            reference_path=reference_original_path,
+        generate_image(
+            reference_prompt=ref.generated_prompt,
             shirt_path=shirt_path,
-            out_original_path=out_original_path,
-            out_preview_path=out_preview_path,
+            reference_path=reference_original_path,
+            base_style=base_style,
+            torso_style=torso_style,
+            out_path=out_original_path,
         )
+        make_preview_image(out_original_path, out_preview_path)
 
         job.status = "completed"
         job.result_original_rel_path = f"{project_id}/{out_original_path.name}"

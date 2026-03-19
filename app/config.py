@@ -50,3 +50,25 @@ def load_config(app: Flask) -> None:
         "YANDEX_DISK_REMOTE_PATH", "/photomaker/shirts"
     )
 
+    # OpenAI для генерации промптов по референсу
+    app.config["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
+    app.config["OPENAI_MODEL"] = os.getenv("OPENAI_MODEL", "gpt-4o")
+    app.config["OPENAI_MASTER_PROMPT"] = os.getenv(
+        "OPENAI_MASTER_PROMPT",
+        "Опиши эту фотографию модели для генерации маркетплейс-фото одежды. "
+        "Укажи: позу, освещение, фон, внешность модели, ракурс. "
+        "Промпт должен быть на английском, 1-2 предложения, подходить для нейросетевой генерации изображений.",
+    )
+
+    # Kie.ai Nano Banana Pro для генерации итоговых фото
+    app.config["KIE_API_KEY"] = os.getenv("KIE_API_KEY", "")
+    app.config["KIE_BASE_URL"] = os.getenv("KIE_BASE_URL", "https://api.kie.ai")
+    app.config["KIE_FILE_UPLOAD_BASE"] = os.getenv("KIE_FILE_UPLOAD_BASE", "https://kieai.redpandaai.co")
+    app.config["PHOTOMAKER_PUBLIC_URL"] = os.getenv("PHOTOMAKER_PUBLIC_URL", "")
+    app.config["KIE_MASTER_PROMPT"] = os.getenv(
+        "KIE_MASTER_PROMPT",
+        "Marketplace product photo. Fit: {base_style}. Print placement: {torso_style}. "
+        "Generate a photorealistic image of a model wearing this print. "
+        "Scene: {reference_prompt}",
+    )
+
