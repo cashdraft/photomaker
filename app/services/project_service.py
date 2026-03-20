@@ -224,10 +224,12 @@ def list_references(project_id: str) -> List[Reference]:
 
 
 def sync_refs_from_jobs(project_id: str, refs: List[Reference], db) -> None:
-    """Синхронизирует result_* в Reference из GenerationJob для ref без результата."""
+    """Синхронизирует result_* в Reference из GenerationJob для ref без результата.
+    Также сбрасывает result_* если сохранённый результат от другого принта."""
+    project = db.get(Project, project_id)
+    if not project:
+        return
     for ref in refs:
-        if getattr(ref, "result_preview_rel_path", None):
-            continue
         job = (
             GenerationJob.query.filter_by(
                 project_id=project_id, reference_id=ref.id, status="completed"
@@ -236,18 +238,53 @@ def sync_refs_from_jobs(project_id: str, refs: List[Reference], db) -> None:
             .order_by(GenerationJob.created_at.desc())
             .first()
         )
-        if job and job.result_preview_rel_path:
-            try:
-                ref.result_preview_rel_path = job.result_preview_rel_path
-                ref.result_original_rel_path = job.result_original_rel_path
+        if not job or not job.result_preview_rel_path:
+            # Сбросить result_* если ref указывает на результат от job с другим принтом
+            ref_path = getattr(ref, "result_preview_rel_path", None)
+            if ref_path:
+                old_job = GenerationJob.query.filter_by(
+                    project_id=project_id, reference_id=ref.id, status="completed",
+                    result_preview_rel_path=ref_path,
+                ).first()
+                if old_job:
+                    job_shirt = getattr(old_job, "shirt_filename", None)
+                    if job_shirt is not None and job_shirt != project.shirt_filename:
+                        ref.result_preview_rel_path = None
+                        ref.result_original_rel_path = None
+                        db.add(ref)
+                        try:
+                            db.commit()
+                        except Exception:  # noqa: BLE001
+                            db.rollback()
+            continue
+        # Не копировать результат, если job создан с другим принтом
+        job_shirt = getattr(job, "shirt_filename", None)
+        if job_shirt is not None and job_shirt != project.shirt_filename:
+            if getattr(ref, "result_preview_rel_path", None):
+                ref.result_preview_rel_path = None
+                ref.result_original_rel_path = None
                 db.add(ref)
-                db.commit()
-            except Exception:  # noqa: BLE001
-                db.rollback()
+                try:
+                    db.commit()
+                except Exception:  # noqa: BLE001
+                    db.rollback()
+            continue
+        if getattr(ref, "result_preview_rel_path", None):
+            continue
+        try:
+            ref.result_preview_rel_path = job.result_preview_rel_path
+            ref.result_original_rel_path = job.result_original_rel_path
+            db.add(ref)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
 
 
 def get_latest_result_for_reference(project_id: str, reference_id: str) -> dict | None:
     """Возвращает последний успешный результат для референса или None."""
+    project = _get_db_session().get(Project, project_id)
+    if not project:
+        return None
     job = (
         GenerationJob.query.filter_by(
             project_id=project_id, reference_id=reference_id, status="completed"
@@ -258,6 +295,18 @@ def get_latest_result_for_reference(project_id: str, reference_id: str) -> dict 
     )
     if not job or not job.result_preview_rel_path:
         return None
+    # Не показывать результат, если job создан с другим принтом
+    job_shirt = getattr(job, "shirt_filename", None)
+    if job_shirt is not None and job_shirt != project.shirt_filename:
+        return None
+    # Не показывать, если job имеет hash и файл принта был заменён (тот же filename, другое содержимое)
+    job_hash = getattr(job, "shirt_file_hash", None)
+    if job_hash is not None:
+        shirt_path = Path(current_app.config["SHIRTS_DIR"]) / project.shirt_filename
+        if shirt_path.exists():
+            from app.utils.image_utils import compute_file_hash
+            if compute_file_hash(shirt_path) != job_hash:
+                return None
     return {
         "preview_url": f"/media/results/preview/{job.result_preview_rel_path}",
         "original_url": f"/media/results/original/{job.result_original_rel_path}",
@@ -295,6 +344,7 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
     shirt_path = Path(app.config["SHIRTS_DIR"]) / project.shirt_filename
     if not shirt_path.exists():
         raise ValueError("Shirt file not found on server")
+    shirt_file_hash = compute_file_hash(shirt_path)
 
     model_path = None
     if model_filename:
@@ -319,7 +369,16 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
             .first()
         )
         is_kie_result = existing and existing.result_original_rel_path and existing.result_original_rel_path.endswith(".png")
-        if existing and existing.result_preview_rel_path and is_kie_result:
+        shirt_matches = (
+            getattr(existing, "shirt_filename", None) is not None
+            and existing.shirt_filename == project.shirt_filename
+        )
+        model_matches = (getattr(existing, "model_filename", None) or "") == (model_filename or "")
+        hash_matches = (
+            getattr(existing, "shirt_file_hash", None) is not None
+            and existing.shirt_file_hash == shirt_file_hash
+        )
+        if existing and existing.result_preview_rel_path and is_kie_result and shirt_matches and model_matches and hash_matches:
             ref.result_preview_rel_path = existing.result_preview_rel_path
             ref.result_original_rel_path = existing.result_original_rel_path
             db.add(ref)
@@ -337,7 +396,13 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
 
         job_id = str(uuid.uuid4())
         job = GenerationJob(
-            id=job_id, project_id=project_id, reference_id=ref.id, status="processing"
+            id=job_id,
+            project_id=project_id,
+            reference_id=ref.id,
+            status="processing",
+            shirt_filename=project.shirt_filename,
+            model_filename=model_filename or None,
+            shirt_file_hash=shirt_file_hash,
         )
         db.add(job)
         db.commit()
@@ -368,6 +433,7 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
             out_original_path = results_root / f"{job_id}.png"
             out_preview_path = results_preview_root / f"{job_id}.jpg"
 
+            model_prompt_text = app.config.get("KIE_MODEL_PROMPT_TEXT", "Use the provided reference image for the model appearance") if model_filename else ""
             generate_image(
                 reference_prompt=ref.generated_prompt,
                 shirt_path=shirt_path,
@@ -375,8 +441,9 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
                 base_style=base_style,
                 torso_style=torso_style,
                 model_path=model_path,
-                model_name=Path(model_filename).stem if model_filename else "",
+                model_name=model_prompt_text,
                 out_path=out_original_path,
+                project_id=project_id,
             )
             make_preview_image(out_original_path, out_preview_path)
 
@@ -416,6 +483,41 @@ def generate_demo_results(project_id: str, options: dict | None = None) -> List[
     return jobs_out
 
 
+def get_generation_preview(
+    project_id: str,
+    reference_id: str,
+    base_style: str = "base",
+    torso_style: str = "chest",
+    model_filename: str = "",
+) -> dict:
+    """
+    Возвращает превью задачи генерации: промпт и список файлов (без вызова Kie).
+    """
+    app = current_app
+    db = _get_db_session()
+
+    project: Project | None = db.get(Project, project_id)  # type: ignore[arg-type]
+    if not project:
+        raise ValueError("Project not found")
+
+    ref: Reference | None = db.get(Reference, reference_id)  # type: ignore[arg-type]
+    if not ref or ref.project_id != project_id:
+        raise ValueError("Reference not found")
+
+    reference_filename = Path(ref.original_rel_path).name
+
+    from app.services.kie_nanobanana_service import build_generation_preview
+
+    return build_generation_preview(
+        reference_prompt=ref.generated_prompt or "",
+        shirt_filename=project.shirt_filename,
+        reference_filename=reference_filename,
+        base_style=base_style,
+        torso_style=torso_style,
+        model_filename=model_filename,
+    )
+
+
 def generate_demo_results_for_reference(
     project_id: str,
     reference_id: str,
@@ -441,6 +543,7 @@ def generate_demo_results_for_reference(
     shirt_path = Path(app.config["SHIRTS_DIR"]) / project.shirt_filename
     if not shirt_path.exists():
         raise ValueError("Shirt file not found on server")
+    shirt_file_hash = compute_file_hash(shirt_path)
 
     model_path = None
     if model_filename:
@@ -460,7 +563,16 @@ def generate_demo_results_for_reference(
             .first()
         )
         is_kie_result = existing and existing.result_original_rel_path and existing.result_original_rel_path.endswith(".png")
-        if existing and existing.result_preview_rel_path and existing.result_original_rel_path and is_kie_result:
+        shirt_matches = (
+            getattr(existing, "shirt_filename", None) is not None
+            and existing.shirt_filename == project.shirt_filename
+        )
+        model_matches = (getattr(existing, "model_filename", None) or "") == (model_filename or "")
+        hash_matches = (
+            getattr(existing, "shirt_file_hash", None) is not None
+            and existing.shirt_file_hash == shirt_file_hash
+        )
+        if existing and existing.result_preview_rel_path and existing.result_original_rel_path and is_kie_result and shirt_matches and model_matches and hash_matches:
             ref.result_preview_rel_path = existing.result_preview_rel_path
             ref.result_original_rel_path = existing.result_original_rel_path
             db.add(ref)
@@ -475,7 +587,13 @@ def generate_demo_results_for_reference(
 
     job_id = str(uuid.uuid4())
     job = GenerationJob(
-        id=job_id, project_id=project_id, reference_id=reference_id, status="processing"
+        id=job_id,
+        project_id=project_id,
+        reference_id=reference_id,
+        status="processing",
+        shirt_filename=project.shirt_filename,
+        model_filename=model_filename or None,
+        shirt_file_hash=shirt_file_hash,
     )
     db.add(job)
     db.commit()
@@ -506,6 +624,7 @@ def generate_demo_results_for_reference(
         out_original_path = results_root / f"{job_id}.png"
         out_preview_path = results_preview_root / f"{job_id}.jpg"
 
+        model_prompt_text = app.config.get("KIE_MODEL_PROMPT_TEXT", "Use the provided reference image for the model appearance") if model_filename else ""
         generate_image(
             reference_prompt=ref.generated_prompt,
             shirt_path=shirt_path,
@@ -513,8 +632,9 @@ def generate_demo_results_for_reference(
             base_style=base_style,
             torso_style=torso_style,
             model_path=model_path,
-            model_name=Path(model_filename).stem if model_filename else "",
+            model_name=model_prompt_text,
             out_path=out_original_path,
+            project_id=project_id,
         )
         make_preview_image(out_original_path, out_preview_path)
 

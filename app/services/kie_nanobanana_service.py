@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 
 import requests
@@ -27,8 +28,13 @@ def _get_headers() -> dict:
 
 
 def _upload_file_base64(file_path: Path, upload_path: str = "photomaker", file_name: str | None = None) -> str:
-    """Загружает файл через Base64 в Kie.ai и возвращает downloadUrl."""
+    """Загружает файл через Base64 в Kie.ai и возвращает downloadUrl.
+    При ошибках соединения — повторы (3 попытки) и fallback на api.kie.ai.
+    """
     data = file_path.read_bytes()
+    from app.utils.image_utils import compute_file_hash
+    file_hash = compute_file_hash(file_path)
+    logger.info("Kie upload: path=%s upload_path=%s size=%d hash=%s", file_path.name, upload_path, len(data), file_hash[:16])
     b64 = base64.b64encode(data).decode("ascii")
     ext = file_path.suffix.lower()
     mime = "image/png" if ext == ".png" else "image/jpeg" if ext in (".jpg", ".jpeg") else "image/webp"
@@ -39,17 +45,40 @@ def _upload_file_base64(file_path: Path, upload_path: str = "photomaker", file_n
         "uploadPath": upload_path,
         "fileName": file_name or file_path.name,
     }
-    upload_base = current_app.config.get("KIE_FILE_UPLOAD_BASE", KIE_API_BASE)
-    resp = requests.post(
-        f"{upload_base}/api/file-base64-upload",
-        headers=_get_headers(),
-        json=payload,
-        timeout=60,
-    )
-    result = resp.json()
-    if not resp.ok or not result.get("success"):
-        raise RuntimeError(f"Kie base64 upload failed: {result.get('msg', resp.text)}")
-    return result["data"]["downloadUrl"]
+    configured_base = current_app.config.get("KIE_FILE_UPLOAD_BASE", KIE_API_BASE)
+    upload_bases = [configured_base]
+    if configured_base.rstrip("/") != KIE_API_BASE.rstrip("/"):
+        upload_bases.append(KIE_API_BASE)
+    max_retries = 3
+    last_err = None
+
+    for upload_base in upload_bases:
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{upload_base.rstrip('/')}/api/file-base64-upload",
+                    headers=_get_headers(),
+                    json=payload,
+                    timeout=90,
+                )
+                result = resp.json()
+                if not resp.ok or not result.get("success"):
+                    raise RuntimeError(f"Kie base64 upload failed: {result.get('msg', resp.text)}")
+                url = result["data"]["downloadUrl"]
+                logger.info("Kie upload OK: %s downloadUrl=%s", upload_base, url)
+                return url
+            except (
+                requests.exceptions.SSLError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.Timeout,
+                ConnectionResetError,
+            ) as e:
+                last_err = e
+                logger.warning("Kie upload attempt %d/%d to %s failed: %s", attempt + 1, max_retries, upload_base, e)
+                if attempt < max_retries - 1:
+                    time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"Kie upload failed after retries. Last error: {last_err}")
 
 
 def _build_prompt(
@@ -72,6 +101,33 @@ def _build_prompt(
         reference_prompt=reference_prompt or "professional photo, neutral background",
         model=model or "",
     ).strip()
+
+
+def build_generation_preview(
+    reference_prompt: str,
+    shirt_filename: str,
+    reference_filename: str,
+    base_style: str = "base",
+    torso_style: str = "chest",
+    model_filename: str = "",
+) -> dict:
+    """
+    Возвращает превью задачи генерации: промпт и список прикрепляемых файлов.
+    Не требует KIE_API_KEY.
+    """
+    model_prompt_text = (
+        current_app.config.get("KIE_MODEL_PROMPT_TEXT", "Use the provided reference image for the model appearance")
+        if model_filename
+        else ""
+    )
+    prompt = _build_prompt(reference_prompt, base_style, torso_style, model_prompt_text)
+    files = []
+    if model_filename:
+        files.append({"role": "model", "name": model_filename})
+    files.append({"role": "shirt", "name": shirt_filename})
+    if current_app.config.get("KIE_SEND_REFERENCE_IMAGE", False):
+        files.append({"role": "reference", "name": reference_filename})
+    return {"prompt": prompt, "files": files}
 
 
 def _create_task(prompt: str, image_urls: list[str]) -> str:
@@ -139,6 +195,7 @@ def generate_image(
     model_name: str = "",
     master_template: str | None = None,
     out_path: Path | None = None,
+    project_id: str | None = None,
 ) -> str:
     """
     Генерирует изображение через Nano Banana Pro.
@@ -149,7 +206,7 @@ def generate_image(
     :param base_style: base | oversize (из блоков База/Оверсайз)
     :param torso_style: chest | back | both (из блоков Грудь/Спина/Оба)
     :param model_path: путь к фото модели (если выбрана)
-    :param model_name: имя модели для промпта {model}
+    :param model_name: текст для подстановки в {model} (из KIE_MODEL_PROMPT_TEXT при выбранной модели)
     :return: URL сгенерированного изображения
     """
     if not shirt_path.exists():
@@ -157,19 +214,55 @@ def generate_image(
     if not reference_path.exists():
         raise FileNotFoundError(f"Референс не найден: {reference_path}")
 
-    image_input = []
-    if model_path and model_path.exists():
-        logger.info("Uploading images to Kie: model=%s, shirt=%s, ref=%s", model_path.name, shirt_path.name, reference_path.name)
-        model_url = _upload_file_base64(model_path, "photomaker/model", "model.jpg")
-        image_input.append(model_url)
-    else:
-        logger.info("Uploading images to Kie: shirt=%s, ref=%s", shirt_path.name, reference_path.name)
+    send_ref = current_app.config.get("KIE_SEND_REFERENCE_IMAGE", False)
+    logger.info("KIE_SEND_REFERENCE_IMAGE: ref will%s be sent to Kie", "" if send_ref else " NOT")
 
-    shirt_url = _upload_file_base64(shirt_path, "photomaker/shirt", "shirt.png")
-    ref_url = _upload_file_base64(reference_path, "photomaker/ref", "ref.jpg")
-    image_input.extend([shirt_url, ref_url])
+    # Уникальный путь для каждой генерации — иначе Kie может кэшировать и возвращать старый принт
+    upload_suffix = uuid.uuid4().hex[:12]
+
+    # Порядок: принт (shirt) ПЕРВЫМ — главный субъект, который должен применяться.
+    # ref — сцена/поза для размещения.
+    image_input = []
+    from app.utils.image_utils import compute_file_hash
+    shirt_hash = compute_file_hash(shirt_path)[:12]
+    logger.info(
+        "Kie REQUEST project=%s shirt=%s hash=%s path=%s",
+        project_id or "-",
+        shirt_path.name,
+        shirt_hash,
+        shirt_path,
+    )
+    shirt_url = _upload_file_base64(
+        shirt_path,
+        f"photomaker/{upload_suffix}/shirt",
+        f"shirt_{shirt_hash}_{shirt_path.suffix}",
+    )
+    image_input.append(shirt_url)
+    if send_ref:
+        ref_url = _upload_file_base64(
+            reference_path, f"photomaker/{upload_suffix}/ref", f"ref_{upload_suffix}{reference_path.suffix}"
+        )
+        image_input.append(ref_url)
+        logger.info("Uploading: shirt=%s, ref=%s", shirt_path.name, reference_path.name)
+    else:
+        logger.info("Uploading: shirt=%s only", shirt_path.name)
+    if model_path and model_path.exists():
+        model_url = _upload_file_base64(
+            model_path, f"photomaker/{upload_suffix}/model", f"model_{upload_suffix}{model_path.suffix}"
+        )
+        image_input.append(model_url)
     prompt = _build_prompt(reference_prompt, base_style, torso_style, model_name, master_template)
-    logger.info("Kie Nano Banana prompt: %r", prompt)
+    # Явно указываем: первый image = принт, применять его именно с этого файла
+    prompt = (
+        "CRITICAL: The first (or only) image in image_input is the exact print design. "
+        "Apply this print to the t-shirt without modification. "
+    ) + prompt
+    logger.info(
+        "Kie createTask: %d images (shirt+%s), prompt_len=%d",
+        len(image_input),
+        "ref" if send_ref else "no-ref",
+        len(prompt),
+    )
 
     task_id = _create_task(prompt, image_input)
     logger.info("Kie task created: %s", task_id)

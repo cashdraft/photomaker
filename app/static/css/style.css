@@ -839,6 +839,10 @@ p {
     border-radius: 12px;
 }
 
+.pm-project-shirt-img.pm-img-clickable {
+    cursor: pointer;
+}
+
 .pm-panel-models {
     padding: 14px;
 }
@@ -954,8 +958,30 @@ p {
 }
 
 .pm-ref-prompt-status,
+.pm-ref-kie-status,
 .pm-ref-status {
     font-size: 13px;
+}
+
+.pm-ref-openai-prompt,
+.pm-ref-kie-prompt {
+    cursor: help;
+    border-bottom: 1px dotted currentColor;
+}
+
+.pm-status-tooltip {
+    position: fixed;
+    z-index: 10000;
+    max-width: 480px;
+    max-height: 60vh;
+    overflow: auto;
+    padding: 12px 14px;
+    font-size: 12px;
+    line-height: 1.45;
+    background: #1e293b;
+    color: #e2e8f0;
+    border-radius: 10px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
 }
 
 .pm-ref-prompt-error {
@@ -1021,6 +1047,17 @@ p {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+}
+
+.pm-download-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    text-decoration: none;
+}
+
+.pm-download-all svg {
+    flex-shrink: 0;
 }
 
 .pm-ref-download svg {

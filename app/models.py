@@ -63,6 +63,12 @@ class GenerationJob(db.Model):
         db.String(36), db.ForeignKey("references.id", ondelete="CASCADE"), nullable=False, index=True
     )
 
+    # Какой принт и модель использовались (для проверки при переиспользовании)
+    shirt_filename = db.Column(db.String(255), nullable=True)
+    model_filename = db.Column(db.String(255), nullable=True)
+    # SHA256 хеш файла принта — если файл заменён, результат не показываем
+    shirt_file_hash = db.Column(db.String(64), nullable=True)
+
     status = db.Column(db.String(32), nullable=False, default="queued", index=True)
     error_message = db.Column(db.Text, nullable=True)
 

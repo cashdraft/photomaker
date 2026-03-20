@@ -13,6 +13,7 @@ const genBtn = el("pmGenerateAllBtn");
 const genStatus = el("pmGenStatus");
 const selectedFilesInfo = el("pmSelectedFilesInfo");
 const refsCountEl = el("pmRefsCount");
+const downloadAllBtn = el("pmDownloadAllBtn");
 
 const refsList = el("pmReferencesList");
 
@@ -62,6 +63,20 @@ function updateGenerateButtonState() {
     const total = cards.length;
     const allHavePrompt = total > 0 && Array.from(cards).every((c) => c.dataset.hasPrompt === "true");
     genBtn.disabled = !allHavePrompt;
+    updateDownloadAllButtonState();
+}
+
+function updateDownloadAllButtonState() {
+    if (!downloadAllBtn || !refsList || !projectId) return;
+    const hasResults = refsList.querySelectorAll('.pm-ref-download[data-original-url]').length > 0;
+    if (hasResults) {
+        downloadAllBtn.href = `/api/projects/${projectId}/download-all`;
+        downloadAllBtn.style.display = "";
+        downloadAllBtn.classList.remove("disabled");
+    } else {
+        downloadAllBtn.href = "#";
+        downloadAllBtn.style.display = "none";
+    }
 }
 
 let modalImages = [];
@@ -153,7 +168,7 @@ document.addEventListener("keydown", (e) => {
 function getPromptStatusHtml(ref) {
     if (ref.generated_prompt) {
         const escaped = escapeHtml(ref.generated_prompt).replace(/"/g, "&quot;");
-        return 'Промпт готов — <span class="pm-prompt-copy" title="' + escaped + '" data-prompt="' + escaped + '" role="button" tabindex="0">Promt</span>';
+        return '<span class="pm-prompt-copy pm-ref-openai-prompt" data-prompt="' + escaped + '" role="button" tabindex="0">Promt</span> — Промпт готов';
     }
     return getPromptStatusText(ref, null);
 }
@@ -236,10 +251,16 @@ function renderReferenceCard(ref) {
     card.dataset.referenceId = ref.id;
     card.dataset.hasPrompt = hasPromptVal ? "true" : "false";
 
+    const { baseStyle, torsoStyle } = getSelectedStyles();
+    const kieParamsText = `Fit: ${baseStyle}. Print placement: ${torsoStyle}`;
+    const kiePromptLine = hasPromptVal
+        ? `<span class="pm-ref-kie-prompt">Промпт в Kie</span> — <span class="pm-ref-kie-params">${kieParamsText}</span>`
+        : "";
     card.innerHTML = `
         <div class="pm-ref-meta-top">
             <div class="pm-card-title">reference: ${ref.id}</div>
             <div class="pm-muted pm-ref-prompt-status">${promptStatusHtml}</div>
+            <div class="pm-muted pm-ref-kie-status" style="${hasPromptVal ? '' : 'display:none;'}">${kiePromptLine}</div>
             <div class="pm-muted pm-ref-status">${resultStatusText}</div>
             <div class="pm-muted pm-ref-error" style="display:none;margin-top:6px;"></div>
         </div>
@@ -326,7 +347,11 @@ function renderReferenceCard(ref) {
     if (promptCopySpan) {
         promptCopySpan.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); copyPromptToClipboard(promptCopySpan); });
         promptCopySpan.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copyPromptToClipboard(promptCopySpan); } });
+        setupOpenaiPromptTooltip(promptCopySpan);
     }
+
+    const kiePromptSpan = card.querySelector(".pm-ref-kie-prompt");
+    if (kiePromptSpan) setupKiePromptTooltip(kiePromptSpan, ref.id);
 
     refsList.appendChild(card);
 
@@ -378,9 +403,22 @@ function updateCardPromptStatus(card, ref) {
     const refId = card.dataset.referenceId;
     stopElapsedForCard(refId);
     const statusEl = card.querySelector(".pm-ref-prompt-status");
+    const kieStatusEl = card.querySelector(".pm-ref-kie-status");
     if (!statusEl) return;
     const content = hasPrompt(ref) && ref.generated_prompt ? getPromptStatusHtml(ref) : getPromptStatusText(ref);
     statusEl.innerHTML = content;
+    if (kieStatusEl) {
+        if (hasPrompt(ref)) {
+            kieStatusEl.style.display = "";
+            const { baseStyle, torsoStyle } = getSelectedStyles();
+            const kieParamsText = `Fit: ${baseStyle}. Print placement: ${torsoStyle}`;
+            kieStatusEl.innerHTML = '<span class="pm-ref-kie-prompt">Промпт в Kie</span> — <span class="pm-ref-kie-params">' + kieParamsText + "</span>";
+            const kieSpan = kieStatusEl.querySelector(".pm-ref-kie-prompt");
+            if (kieSpan) setupKiePromptTooltip(kieSpan, refId);
+        } else {
+            kieStatusEl.style.display = "none";
+        }
+    }
     card.dataset.hasPrompt = hasPrompt(ref) ? "true" : "false";
     if (ref.prompt_error) {
         statusEl.classList.add("pm-ref-prompt-error");
@@ -389,6 +427,8 @@ function updateCardPromptStatus(card, ref) {
     }
     if (hasPrompt(ref) && ref.generated_prompt) {
         setupPromptCopyHandler(card);
+        const promptSpan = card.querySelector(".pm-prompt-copy");
+        if (promptSpan) setupOpenaiPromptTooltip(promptSpan);
     }
     const regenBtn = card.querySelector(".pm-ref-regenerate");
     if (regenBtn) regenBtn.disabled = !hasPrompt(ref);
@@ -449,6 +489,7 @@ function applyRefResultsFromApi(refs) {
             setRefStatus(ref.id, "готово");
         }
     }
+    updateDownloadAllButtonState();
 }
 
 function getFriendlyFetchError(e) {
@@ -579,6 +620,81 @@ async function uploadFiles(files) {
     }
 }
 
+let statusTooltipEl = null;
+let statusTooltipTimeout = null;
+
+function setupOpenaiPromptTooltip(spanEl) {
+    if (!spanEl) return;
+    spanEl.addEventListener("mouseenter", () => {
+        const text = spanEl.getAttribute("data-prompt") || "";
+        if (text) showStatusTooltip(spanEl, `Промпт от OpenAI:\n\n${text}`);
+    });
+    spanEl.addEventListener("mouseleave", (e) => {
+        const related = e.relatedTarget;
+        if (statusTooltipEl && statusTooltipEl.contains(related)) return;
+        hideStatusTooltip();
+    });
+}
+
+function setupKiePromptTooltip(spanEl, referenceId) {
+    if (!spanEl) return;
+    spanEl.addEventListener("mouseenter", () => {
+        showStatusTooltip(spanEl, "Загрузка…");
+        const { baseStyle, torsoStyle, model } = getSelectedStyles();
+        const params = new URLSearchParams({ base_style: baseStyle, torso_style: torsoStyle, model });
+        const loadingText = "Загрузка…";
+        fetch(`/api/projects/${projectId}/references/${referenceId}/generation-preview?${params}`)
+            .then((res) => res.json().then((data) => ({ ok: res.ok, data })).catch(() => ({ ok: false, data: {} })))
+            .then(({ ok, data }) => {
+                if (!statusTooltipEl || !document.body.contains(statusTooltipEl)) return;
+                if (statusTooltipEl.textContent !== loadingText) return;
+                if (!ok) {
+                    statusTooltipEl.textContent = "Ошибка: " + (data.error || "не удалось загрузить превью");
+                    return;
+                }
+                const roleNames = { model: "Модель", shirt: "Футболка", reference: "Референс" };
+                const filesList = (data.files || []).map((f) => `${roleNames[f.role] || f.role}: ${f.name}`).join("\n");
+                statusTooltipEl.textContent = `Промпт в Kie:\n\n${data.prompt || "(пусто)"}\n\nФайлы:\n${filesList || "(нет)"}`;
+            })
+            .catch((e) => {
+                if (statusTooltipEl && document.body.contains(statusTooltipEl) && statusTooltipEl.textContent === loadingText) {
+                    statusTooltipEl.textContent = "Ошибка загрузки";
+                }
+            });
+    });
+    spanEl.addEventListener("mouseleave", (e) => {
+        const related = e.relatedTarget;
+        if (statusTooltipEl && statusTooltipEl.contains(related)) return;
+        hideStatusTooltip();
+    });
+}
+
+function showStatusTooltip(anchorEl, text) {
+    hideStatusTooltip();
+    const tip = document.createElement("div");
+    tip.className = "pm-status-tooltip";
+    tip.textContent = text;
+    tip.style.whiteSpace = "pre-wrap";
+    document.body.appendChild(tip);
+    statusTooltipEl = tip;
+    const rect = anchorEl.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + 6;
+    if (left + tip.offsetWidth > window.innerWidth - 8) left = window.innerWidth - tip.offsetWidth - 8;
+    if (top + tip.offsetHeight > window.innerHeight - 8) top = rect.top - tip.offsetHeight - 6;
+    if (left < 8) left = 8;
+    if (top < 8) top = 8;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${top}px`;
+    tip.addEventListener("mouseenter", () => {});
+    tip.addEventListener("mouseleave", () => hideStatusTooltip());
+}
+
+function hideStatusTooltip() {
+    if (statusTooltipEl && statusTooltipEl.parentNode) statusTooltipEl.parentNode.removeChild(statusTooltipEl);
+    statusTooltipEl = null;
+}
+
 function setRefStatus(referenceId, status, errorMessage) {
     const card = refsList.querySelector(`[data-reference-id="${referenceId}"]`);
     if (!card) return;
@@ -633,6 +749,12 @@ function getSelectedStyles() {
     const selectedItem = document.querySelector(".pm-model-item.selected");
     const model = selectedItem?.dataset.model || "";
     return { baseStyle, torsoStyle, model };
+}
+
+function updateAllKieParamsSpans() {
+    const { baseStyle, torsoStyle } = getSelectedStyles();
+    const text = `Fit: ${baseStyle}. Print placement: ${torsoStyle}`;
+    document.querySelectorAll(".pm-ref-kie-params").forEach((el) => { el.textContent = text; });
 }
 
 async function regeneratePrompt(referenceId, promptBtn, card) {
@@ -874,6 +996,10 @@ if (refFilesInput) {
 uploadBtn.addEventListener("click", uploadReferences);
 genBtn.addEventListener("click", generateAll);
 
+document.querySelectorAll('input[name="pmBaseStyle"], input[name="pmTorsoStyle"]').forEach((radio) => {
+    radio.addEventListener("change", updateAllKieParamsSpans);
+});
+
 renderInitial();
 
 // Надежная обработка клика по картинкам (карточки могут рендериться динамически)
@@ -889,6 +1015,23 @@ if (refsList) {
             ? "Результат"
             : "Исходник";
         openImageModal(full, metaText);
+    });
+}
+
+// Клик по картинке принта — открыть в полноэкранном просмотре
+const shirtImg = el("pmProjectShirtImg");
+if (shirtImg) {
+    const openShirtModal = () => {
+        const full = shirtImg.dataset?.fullsrc || "";
+        const meta = shirtImg.dataset?.metatext || "Принт";
+        if (full) openImageModal(full, meta);
+    };
+    shirtImg.addEventListener("click", openShirtModal);
+    shirtImg.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openShirtModal();
+        }
     });
 }
 

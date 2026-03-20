@@ -100,6 +100,32 @@ def _migrate_references_add_result_paths(db) -> None:
         db.session.rollback()
 
 
+def _migrate_generation_jobs_add_shirt_filename(db) -> None:
+    """Добавляет shirt_filename и model_filename в generation_jobs."""
+    try:
+        result = db.session.execute(
+            db.text('PRAGMA table_info("generation_jobs")'),
+        )
+        columns = [row[1] for row in result.fetchall()]
+        if "shirt_filename" not in columns:
+            db.session.execute(
+                db.text('ALTER TABLE "generation_jobs" ADD COLUMN shirt_filename VARCHAR(255)'),
+            )
+            db.session.commit()
+        if "model_filename" not in columns:
+            db.session.execute(
+                db.text('ALTER TABLE "generation_jobs" ADD COLUMN model_filename VARCHAR(255)'),
+            )
+            db.session.commit()
+        if "shirt_file_hash" not in columns:
+            db.session.execute(
+                db.text('ALTER TABLE "generation_jobs" ADD COLUMN shirt_file_hash VARCHAR(64)'),
+            )
+            db.session.commit()
+    except Exception:  # noqa: BLE001
+        db.session.rollback()
+
+
 from .db import init_db
 
 
@@ -124,6 +150,7 @@ def create_app() -> Flask:
         _migrate_references_add_prompt_error(db)
         _migrate_references_add_prompt_started_at(db)
         _migrate_references_add_result_paths(db)
+        _migrate_generation_jobs_add_shirt_filename(db)
 
     # Регистрация blueprints
     from .routes.pages import bp as pages_bp

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 import shutil
 from app.models import GenerationJob, Project, Reference
@@ -12,6 +14,7 @@ from app.services.project_service import (
     create_project_and_save,
     generate_demo_results,
     generate_demo_results_for_reference,
+    get_generation_preview,
     get_latest_result_for_reference,
     list_references,
 )
@@ -167,6 +170,47 @@ def references_list(project_id: str):
     return jsonify({"items": [_ref_to_json(r, project_id) for r in refs]})
 
 
+@bp.get("/projects/<project_id>/download-all")
+def project_download_all(project_id: str):
+    """Скачать ZIP со всеми сгенерированными результатами. Имя архива — принт без расширения."""
+    project: Project | None = Project.query.get(project_id)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    refs = (
+        Reference.query.filter_by(project_id=project_id)
+        .filter(Reference.result_original_rel_path.isnot(None))
+        .order_by(Reference.created_at.asc())
+        .all()
+    )
+    if not refs:
+        return jsonify({"error": "Нет сгенерированных результатов для скачивания"}), 404
+
+    results_dir = Path(current_app.config["RESULTS_ORIGINAL_DIR"])
+    zip_buf = io.BytesIO()
+    zip_name = Path(project.shirt_filename).stem
+
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, ref in enumerate(refs):
+            rel_path = ref.result_original_rel_path
+            if not rel_path:
+                continue
+            full_path = results_dir / rel_path
+            if not full_path.exists():
+                continue
+            ext = full_path.suffix or ".png"
+            arcname = f"{ref.id}{ext}"
+            zf.write(full_path, arcname=arcname)
+
+    zip_buf.seek(0)
+    return send_file(
+        zip_buf,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name=f"{zip_name}.zip",
+    )
+
+
 @bp.post("/projects/<project_id>/references")
 def references_upload(project_id: str):
     files = request.files.getlist("files")
@@ -210,6 +254,47 @@ def references_regenerate_prompt(project_id: str, reference_id: str):
     if not ref:
         return jsonify({"error": "Reference not found"}), 404
     return jsonify(_ref_to_json(ref, project_id))
+
+
+@bp.get("/projects/<project_id>/debug-shirt")
+def project_debug_shirt(project_id: str):
+    """Отладка: какой принт использует проект, путь, хеш файла."""
+    from app.db import db
+    from app.utils.image_utils import compute_file_hash
+    project = db.session.get(Project, project_id)  # type: ignore[arg-type]
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+    shirt_path = Path(current_app.config["SHIRTS_DIR"]) / project.shirt_filename
+    exists = shirt_path.exists()
+    info = {
+        "project_id": project_id,
+        "shirt_filename": project.shirt_filename,
+        "shirt_full_path": str(shirt_path),
+        "file_exists": exists,
+    }
+    if exists:
+        info["file_size"] = shirt_path.stat().st_size
+        info["file_hash_sha256"] = compute_file_hash(shirt_path)
+    return jsonify(info)
+
+
+@bp.get("/projects/<project_id>/references/<reference_id>/generation-preview")
+def references_generation_preview(project_id: str, reference_id: str):
+    """Превью промпта и файлов для задачи генерации (по текущим настройкам)."""
+    base_style = request.args.get("base_style", "base")
+    torso_style = request.args.get("torso_style", "chest")
+    model = request.args.get("model", "")
+    try:
+        preview = get_generation_preview(
+            project_id=project_id,
+            reference_id=reference_id,
+            base_style=base_style,
+            torso_style=torso_style,
+            model_filename=model,
+        )
+        return jsonify(preview)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
 
 
 @bp.post("/projects/<project_id>/references/<reference_id>/regenerate")

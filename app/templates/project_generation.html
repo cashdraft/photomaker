@@ -9,7 +9,7 @@
                 <div class="pm-project-top-filename">{{ project.shirt_filename }}</div>
 
                 <div class="pm-project-left-row">
-                    <img src="{{ shirt_preview_url }}" alt="Принт" class="pm-project-shirt-img">
+                    <img id="pmProjectShirtImg" src="{{ shirt_preview_url }}" alt="Принт" class="pm-project-shirt-img pm-img-clickable" data-fullsrc="{{ shirt_original_url }}" data-metatext="Принт" role="button" tabindex="0" title="Нажмите для просмотра в полном размере">
 
                     <div class="pm-project-options">
                         <div class="pm-option-block">
@@ -79,6 +79,14 @@
                 <button id="pmGenerateAllBtn" class="pm-btn pm-btn-primary" type="button">
                     Сгенерировать все
                 </button>
+                <a id="pmDownloadAllBtn" href="#" class="pm-btn pm-btn-secondary pm-download-all" title="Скачать все результаты в ZIP" style="display:none;">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Скачать все
+                </a>
                 <div id="pmRefsCount" class="pm-muted">Референсов: 0</div>
                 <div id="pmGenStatus" class="pm-muted"></div>
             </div>
@@ -108,6 +116,6 @@
         window.pmProjectId = "{{ project.id }}";
         window.pmInitialReferences = {{ references|tojson }};
     </script>
-    <script src="{{ url_for('static', filename='js/project_generation.js') }}?v=18" defer></script>
+    <script src="{{ url_for('static', filename='js/project_generation.js') }}?v=25" defer></script>
 {% endblock %}
 

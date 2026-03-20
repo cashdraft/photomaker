@@ -34,6 +34,7 @@ def project_generation(project_id: str):
         make_preview_image(shirt_src, shirt_preview_path)
 
     shirt_preview_url = f"/media/shirts/preview/{preview_name}"
+    shirt_original_url = f"/media/shirts/original/{project.shirt_filename}"
 
     refs = list_references(project_id=project_id)
     references = []
@@ -57,6 +58,7 @@ def project_generation(project_id: str):
         "project_generation.html",
         project={"id": project.id, "shirt_filename": project.shirt_filename},
         shirt_preview_url=shirt_preview_url,
+        shirt_original_url=shirt_original_url,
         references=references,
     )
 

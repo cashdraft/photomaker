@@ -75,4 +75,11 @@ def load_config(app: Flask) -> None:
         "Generate a photorealistic image of a model wearing this print. "
         "Scene: {reference_prompt}. Model: {model}",
     )
+    app.config["KIE_MODEL_PROMPT_TEXT"] = os.getenv(
+        "KIE_MODEL_PROMPT_TEXT",
+        "Use the provided reference image for the model appearance",
+    )
+    # 0 = не отправлять референс в Kie, 1 = отправлять
+    raw = os.getenv("KIE_SEND_REFERENCE_IMAGE", "0").strip().lower()
+    app.config["KIE_SEND_REFERENCE_IMAGE"] = raw in {"1", "true", "yes", "on"}
 
