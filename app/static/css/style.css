@@ -6,6 +6,8 @@ body {
 }
 
 .pm-header {
+    position: relative;
+    z-index: 100;
     border-bottom: 1px solid #e5e7eb;
     backdrop-filter: blur(12px);
     background: #ffffff;
@@ -17,6 +19,17 @@ body {
     font-size: 22px;
     font-weight: 600;
     color: #0f172a;
+}
+
+.pm-logo a {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.pm-logo a:hover {
+    color: #475569;
 }
 
 .pm-main {
@@ -639,6 +652,7 @@ p {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
+    align-items: start;
 }
 
 .pm-project-top {
@@ -957,6 +971,41 @@ p {
     gap: 6px;
 }
 
+.pm-ref-header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.pm-ref-header-row .pm-card-title {
+    flex: 1;
+    min-width: 0;
+}
+
+.pm-ref-delete,
+.pm-video-delete {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #64748b;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+}
+
+.pm-ref-delete:hover,
+.pm-video-delete:hover {
+    color: #dc2626;
+    background: rgba(220, 38, 38, 0.1);
+}
+
 .pm-ref-prompt-status,
 .pm-ref-kie-status,
 .pm-ref-status {
@@ -1030,8 +1079,21 @@ p {
 
 .pm-ref-buttons {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     width: 100%;
+    align-items: center;
+}
+
+.pm-card-video .pm-ref-buttons {
+    justify-content: flex-start;
+}
+
+.pm-card-video .pm-ref-buttons a.pm-ref-download {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    text-decoration: none;
 }
 
 .pm-ref-regenerate-prompt {
@@ -1042,11 +1104,73 @@ p {
     flex: 1;
 }
 
-.pm-ref-download {
+.pm-ref-download,
+.pm-ref-video {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;
+}
+
+.pm-ref-video svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Контейнер для видео — те же размеры, что у изображений */
+.pm-card-video .pm-ref-video-result {
+    min-height: 220px;
+    height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.pm-card-video .pm-ref-video-result video {
+    width: 100%;
+    height: 100%;
+    max-height: 220px;
+    object-fit: contain;
+    display: block;
+    border-radius: 10px;
+}
+
+.pm-ref-video-error {
+    color: var(--pm-error, #dc2626);
+}
+
+.pm-ref-video-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    min-height: 120px;
+}
+
+.pm-spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid #e5e7eb;
+    border-top-color: var(--pm-primary, #2563eb);
+    border-radius: 50%;
+    animation: pm-spin 0.8s linear infinite;
+}
+
+@keyframes pm-spin {
+    to { transform: rotate(360deg); }
+}
+
+.pm-video-elapsed {
+    font-weight: 500;
+    color: #374151;
+}
+
+.pm-video-hint {
+    font-size: 0.85em;
 }
 
 .pm-download-all {
@@ -1081,8 +1205,14 @@ p {
     }
 
     .pm-ref-pair-img,
-    .pm-ref-result-empty {
+    .pm-ref-result-empty,
+    .pm-card-video .pm-ref-video-result {
         height: 180px;
+        min-height: 180px;
+        max-height: 180px;
+    }
+
+    .pm-card-video .pm-ref-video-result video {
         max-height: 180px;
     }
 }

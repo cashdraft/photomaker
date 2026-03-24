@@ -115,7 +115,8 @@
     <script>
         window.pmProjectId = "{{ project.id }}";
         window.pmInitialReferences = {{ references|tojson }};
+        window.pmInitialVideoGenerations = {{ video_generations|tojson }};
     </script>
-    <script src="{{ url_for('static', filename='js/project_generation.js') }}?v=25" defer></script>
+    <script src="{{ url_for('static', filename='js/project_generation.js') }}?v=28" defer></script>
 {% endblock %}
 

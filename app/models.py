@@ -81,3 +81,24 @@ class GenerationJob(db.Model):
         db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
+
+class VideoGeneration(db.Model):
+    """Генерация видео из сгенерированной картинки через Kie grok-imagine/image-to-video."""
+    __tablename__ = "video_generations"
+
+    id = db.Column(db.String(36), primary_key=True)
+
+    project_id = db.Column(
+        db.String(36), db.ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_reference_id = db.Column(
+        db.String(36), db.ForeignKey("references.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    kie_task_id = db.Column(db.String(128), nullable=True, index=True)
+    status = db.Column(db.String(32), nullable=False, default="processing", index=True)
+    video_url = db.Column(db.String(1024), nullable=True)
+    error_message = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+

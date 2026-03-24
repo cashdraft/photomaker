@@ -5,18 +5,23 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
+import requests
 from flask import Blueprint, current_app, jsonify, request, send_file
 
 import shutil
-from app.models import GenerationJob, Project, Reference
+from app.models import GenerationJob, Project, Reference, VideoGeneration
 from app.services.project_service import (
     add_references,
     create_project_and_save,
+    delete_reference,
+    delete_video_generation,
     generate_demo_results,
     generate_demo_results_for_reference,
+    generate_video_from_reference,
     get_generation_preview,
     get_latest_result_for_reference,
     list_references,
+    list_video_generations,
 )
 from app.services.shirt_service import list_shirts
 from app.services.model_service import list_models
@@ -183,7 +188,13 @@ def project_download_all(project_id: str):
         .order_by(Reference.created_at.asc())
         .all()
     )
-    if not refs:
+    videos = (
+        VideoGeneration.query.filter_by(project_id=project_id, status="completed")
+        .filter(VideoGeneration.video_url.isnot(None))
+        .order_by(VideoGeneration.created_at.asc())
+        .all()
+    )
+    if not refs and not videos:
         return jsonify({"error": "Нет сгенерированных результатов для скачивания"}), 404
 
     results_dir = Path(current_app.config["RESULTS_ORIGINAL_DIR"])
@@ -191,7 +202,7 @@ def project_download_all(project_id: str):
     zip_name = Path(project.shirt_filename).stem
 
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for i, ref in enumerate(refs):
+        for ref in refs:
             rel_path = ref.result_original_rel_path
             if not rel_path:
                 continue
@@ -201,6 +212,17 @@ def project_download_all(project_id: str):
             ext = full_path.suffix or ".png"
             arcname = f"{ref.id}{ext}"
             zf.write(full_path, arcname=arcname)
+
+        for v in videos:
+            if not v.video_url:
+                continue
+            try:
+                resp = requests.get(v.video_url, timeout=60)
+                resp.raise_for_status()
+                arcname = f"video_{v.id}.mp4"
+                zf.writestr(arcname, resp.content)
+            except Exception:
+                continue
 
     zip_buf.seek(0)
     return send_file(
@@ -223,6 +245,14 @@ def references_upload(project_id: str):
         return jsonify({"error": str(e)}), 400
 
     return jsonify({"items": [_ref_to_json(r, project_id) for r in refs]})
+
+
+@bp.route("/projects/<project_id>/references/<reference_id>", methods=["DELETE"])
+def references_delete(project_id: str, reference_id: str):
+    """Удаление референса."""
+    if delete_reference(project_id, reference_id):
+        return jsonify({"ok": True})
+    return jsonify({"error": "Reference not found"}), 404
 
 
 @bp.post("/projects/<project_id>/generate")
@@ -276,6 +306,75 @@ def project_debug_shirt(project_id: str):
         info["file_size"] = shirt_path.stat().st_size
         info["file_hash_sha256"] = compute_file_hash(shirt_path)
     return jsonify(info)
+
+
+@bp.get("/projects/<project_id>/video-generations")
+def project_video_generations(project_id: str):
+    """Список генераций видео по проекту. Для processing-задач дополняет статусом Kie."""
+    import logging
+    from app.services.kie_grok_video_service import get_video_task_status
+
+    log = logging.getLogger("app.routes.api")
+    items = list_video_generations(project_id)
+    for item in items:
+        item["kie_state"] = ""
+        item["kie_progress"] = None
+        if item.get("status") == "processing":
+            kid = item.get("kie_task_id")
+            if kid:
+                kie = get_video_task_status(kid)
+                if kie:
+                    item["kie_state"] = kie.get("state", "")
+                    item["kie_progress"] = kie.get("progress")
+                    item["kie_fail_msg"] = kie.get("failMsg", "")
+            else:
+                log.info("video-gen %s: processing but no kie_task_id yet", item.get("id", "")[:8])
+    return jsonify({"items": items})
+
+
+@bp.get("/projects/<project_id>/video-generations/debug")
+def project_video_generations_debug(project_id: str):
+    """Отладка: сырые данные video_generations из БД."""
+    from app.models import VideoGeneration
+
+    vgens = VideoGeneration.query.filter_by(project_id=project_id).order_by(VideoGeneration.created_at).all()
+    items = [
+        {
+            "id": v.id,
+            "kie_task_id": v.kie_task_id,
+            "status": v.status,
+            "error_message": v.error_message,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+        }
+        for v in vgens
+    ]
+    return jsonify({"items": items})
+
+
+@bp.route("/projects/<project_id>/video-generations/<video_id>", methods=["DELETE"])
+def project_video_generation_delete(project_id: str, video_id: str):
+    """Удаление генерации видео."""
+    import logging
+    log = logging.getLogger("app.routes.api")
+    ok = delete_video_generation(project_id, video_id)
+    log.info("DELETE video-gen %s project=%s ok=%s", video_id[:8], project_id[:8], ok)
+    if ok:
+        return jsonify({"ok": True})
+    return jsonify({"error": "Video generation not found"}), 404
+
+
+@bp.post("/projects/<project_id>/references/<reference_id>/generate-video")
+def references_generate_video(project_id: str, reference_id: str):
+    """Запуск генерации видео из результата референса."""
+    import logging
+    try:
+        out = generate_video_from_reference(project_id=project_id, reference_id=reference_id)
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.getLogger("app.routes.api").exception("generate-video failed")
+        return jsonify({"error": str(e)}), 500
 
 
 @bp.get("/projects/<project_id>/references/<reference_id>/generation-preview")

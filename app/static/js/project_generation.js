@@ -4,6 +4,7 @@ function el(id) {
 
 const projectId = window.pmProjectId;
 const initialReferences = window.pmInitialReferences || [];
+const initialVideoGenerations = window.pmInitialVideoGenerations || [];
 
 const dropzone = el("pmDropzone");
 const refFilesInput = el("pmReferenceFiles");
@@ -68,7 +69,8 @@ function updateGenerateButtonState() {
 
 function updateDownloadAllButtonState() {
     if (!downloadAllBtn || !refsList || !projectId) return;
-    const hasResults = refsList.querySelectorAll('.pm-ref-download[data-original-url]').length > 0;
+    const hasResults = refsList.querySelectorAll('.pm-ref-download[data-original-url]').length > 0 ||
+        refsList.querySelectorAll('.pm-card-video a.pm-ref-download').length > 0;
     if (hasResults) {
         downloadAllBtn.href = `/api/projects/${projectId}/download-all`;
         downloadAllBtn.style.display = "";
@@ -258,7 +260,14 @@ function renderReferenceCard(ref) {
         : "";
     card.innerHTML = `
         <div class="pm-ref-meta-top">
-            <div class="pm-card-title">reference: ${ref.id}</div>
+            <div class="pm-ref-header-row">
+                <div class="pm-card-title">reference: ${ref.id}</div>
+                <button class="pm-ref-delete" type="button" data-reference-id="${ref.id}" title="Удалить референс" aria-label="Удалить референс">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
             <div class="pm-muted pm-ref-prompt-status">${promptStatusHtml}</div>
             <div class="pm-muted pm-ref-kie-status" style="${hasPromptVal ? '' : 'display:none;'}">${kiePromptLine}</div>
             <div class="pm-muted pm-ref-status">${resultStatusText}</div>
@@ -296,6 +305,14 @@ function renderReferenceCard(ref) {
             </button>
             <button class="pm-btn pm-btn-secondary pm-ref-regenerate" type="button" data-reference-id="${ref.id}" ${!hasPromptVal ? 'disabled' : ''}>
                 Перегенерировать
+            </button>
+            <button class="pm-btn pm-btn-secondary pm-ref-video" type="button" data-reference-id="${ref.id}"
+                data-result-original-url="${resultOriginal}" data-result-preview-url="${resultPreview}" style="${hasResult ? '' : 'display:none;'}" title="Сгенерировать видео из результата">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                    <polygon points="23 7 16 12 23 17 23 7"/>
+                    <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                </svg>
+                Видео
             </button>
             <button class="pm-btn pm-btn-secondary pm-ref-download" type="button" data-reference-id="${ref.id}"
                 data-original-url="${resultOriginal}" style="${hasResult ? '' : 'display:none;'}">
@@ -338,6 +355,19 @@ function renderReferenceCard(ref) {
         });
     }
 
+    const videoBtn = card.querySelector(".pm-ref-video");
+    if (videoBtn) {
+        videoBtn.addEventListener("click", () => generateVideoFromReference(ref.id, videoBtn));
+    }
+
+    const deleteBtn = card.querySelector(".pm-ref-delete");
+    if (deleteBtn) {
+        deleteBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            deleteReference(ref.id, card);
+        });
+    }
+
     const promptBtn = card.querySelector(".pm-ref-regenerate-prompt");
     if (promptBtn) {
         promptBtn.addEventListener("click", () => regeneratePrompt(ref.id, promptBtn, card));
@@ -358,6 +388,190 @@ function renderReferenceCard(ref) {
     if (isPromptPending(ref)) {
         startElapsedForCard(card, ref.id, ref.created_at, ref.prompt_started_at);
     }
+}
+
+function formatKieVideoStatus(kieState, progress, hasKieTaskId) {
+    const s = (kieState || "").toLowerCase();
+    if (s === "waiting") return "Kie: в очереди";
+    if (s === "queuing") return "Kie: в очереди на генерацию";
+    if (s === "generating") return progress != null ? `Kie: генерация… ${progress}%` : "Kie: генерация видео…";
+    if (s === "success") return "готово";
+    if (s === "fail") return "ошибка";
+    if (hasKieTaskId) return "Kie: запрос статуса…";
+    return "отправка в Kie (Grok)…";
+}
+
+function renderVideoCard(videoGen, sourceRef) {
+    const sourcePreview = sourceRef?.result_preview_url || sourceRef?.original_url || "";
+    const sourceOriginal = sourceRef?.result_original_url || sourceRef?.original_url || "";
+    const isCompleted = videoGen.status === "completed" && videoGen.video_url;
+    const isFailed = videoGen.status === "failed";
+
+    const card = document.createElement("div");
+    card.className = "pm-card pm-card-ref pm-card-video";
+    card.dataset.videoId = videoGen.id;
+    card.dataset.sourceReferenceId = videoGen.source_reference_id;
+
+    let resultContent = "";
+    if (isCompleted) {
+        resultContent = `<video class="pm-card-img pm-ref-pair-img" src="${escapeHtml(videoGen.video_url)}" controls playsinline></video>`;
+    } else if (isFailed) {
+        resultContent = `<div class="pm-ref-result-empty pm-ref-video-error">Ошибка: ${escapeHtml(videoGen.error_message || "Неизвестная ошибка")}</div>`;
+    } else {
+        const hasKie = !!videoGen.kie_task_id;
+        const kieDetail = formatKieVideoStatus(videoGen.kie_state, videoGen.kie_progress, hasKie);
+        resultContent = `<div class="pm-ref-result-empty pm-ref-video-loading"><span class="pm-spinner"></span><span class="pm-video-elapsed">0 сек</span><div class="pm-video-detail">${escapeHtml(kieDetail)}</div><div class="pm-muted pm-video-hint">Обычно 1–3 минуты, иногда дольше при загрузке</div></div>`;
+    }
+
+    const hasKie = !!videoGen.kie_task_id;
+    const statusDetail = formatKieVideoStatus(videoGen.kie_state, videoGen.kie_progress, hasKie);
+    const statusText = isCompleted ? "Видео: готово" : isFailed ? "Видео: ошибка" : "Видео: " + statusDetail;
+    card.innerHTML = `
+        <div class="pm-ref-meta-top">
+            <div class="pm-ref-header-row">
+                <div class="pm-card-title">Видео (из reference: ${videoGen.source_reference_id.slice(0, 8)}…)</div>
+                <button class="pm-video-delete" type="button" data-video-id="${videoGen.id}" title="Удалить видео" aria-label="Удалить видео">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="pm-muted pm-ref-status">${statusText}</div>
+        </div>
+        <div class="pm-ref-pair">
+            <div class="pm-ref-col">
+                <div class="pm-muted pm-ref-col-title">Исходник</div>
+                <img class="pm-card-img pm-ref-pair-img pm-ref-original-img" src="${sourcePreview}" alt="Исходник" data-fullsrc="${sourceOriginal}" loading="lazy">
+            </div>
+            <div class="pm-ref-col">
+                <div class="pm-muted pm-ref-col-title">Результат</div>
+                <div class="pm-ref-video-result">${resultContent}</div>
+            </div>
+        </div>
+        <div class="pm-ref-buttons">
+            ${isCompleted ? `<a href="${escapeHtml(videoGen.video_url)}" download="video-${videoGen.id}.mp4" class="pm-btn pm-btn-secondary pm-ref-download"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Скачать</a>` : ""}
+        </div>
+    `;
+
+    const srcImg = card.querySelector(".pm-ref-original-img");
+    if (srcImg) {
+        srcImg.addEventListener("click", () => {
+            const full = srcImg.dataset.fullsrc || "";
+            if (full) openImageModal(full, "Исходник видео");
+        });
+    }
+
+    const refId = videoGen.source_reference_id;
+    const refCard = refsList.querySelector(`.pm-card-ref[data-reference-id="${refId}"]`);
+    if (refCard) {
+        let insertAfter = refCard;
+        let n = refCard.nextElementSibling;
+        while (n && n.classList.contains("pm-card-video") && n.dataset.sourceReferenceId === refId) {
+            insertAfter = n;
+            n = n.nextElementSibling;
+        }
+        refsList.insertBefore(card, insertAfter.nextSibling);
+    } else {
+        refsList.appendChild(card);
+    }
+
+    const deleteBtn = card.querySelector(".pm-video-delete");
+    if (deleteBtn) {
+        deleteBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            deleteVideoGeneration(videoGen.id, card);
+        });
+    }
+
+    if (!isCompleted && !isFailed) {
+        const startedAt = videoGen.created_at ? new Date(videoGen.created_at).getTime() : Date.now();
+        const elapsedEl = card.querySelector(".pm-video-elapsed");
+        let intervalId = null;
+        const updateElapsed = () => {
+            if (!card.isConnected || card.querySelector("video")) {
+                if (intervalId) clearInterval(intervalId);
+                return;
+            }
+            const sec = Math.floor((Date.now() - startedAt) / 1000);
+            if (elapsedEl) elapsedEl.textContent = `${sec} сек`;
+        };
+        updateElapsed();
+        intervalId = setInterval(updateElapsed, 1000);
+    }
+}
+
+async function generateVideoFromReference(referenceId, videoBtn) {
+    if (!projectId) return;
+    videoBtn.disabled = true;
+    try {
+        const res = await fetch(`/api/projects/${projectId}/references/${referenceId}/generate-video`, { method: "POST" });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Ошибка запуска генерации видео");
+
+        const sourceRef = {
+            result_original_url: videoBtn.dataset.resultOriginalUrl || "",
+            result_preview_url: videoBtn.dataset.resultPreviewUrl || "",
+            original_url: videoBtn.dataset.resultOriginalUrl || "",
+        };
+
+        renderVideoCard(
+            { id: data.id, source_reference_id: referenceId, status: "processing", video_url: null, error_message: null },
+            sourceRef,
+        );
+        startVideoPolling();
+    } catch (e) {
+        alert(e.message || "Ошибка при запуске генерации видео");
+    } finally {
+        videoBtn.disabled = false;
+    }
+}
+
+let videoPollIntervalId = null;
+
+function startVideoPolling() {
+    if (videoPollIntervalId) return;
+    function poll() {
+        if (!projectId) return;
+        fetch(`/api/projects/${projectId}/video-generations`)
+            .then((r) => r.json())
+            .then((data) => {
+                const items = data.items || [];
+                const processing = items.filter((v) => v.status === "processing");
+                for (const v of items) {
+                    const card = refsList.querySelector(`.pm-card-video[data-video-id="${v.id}"]`);
+                    if (!card) continue;
+                    const resultEl = card.querySelector(".pm-ref-video-result");
+                    const statusEl = card.querySelector(".pm-ref-status");
+                    const detailEl = card.querySelector(".pm-video-detail");
+                    if (v.status === "completed" && v.video_url) {
+                        if (card.dataset.lastStatus === "completed") continue;
+                        card.dataset.lastStatus = "completed";
+                        if (resultEl) resultEl.innerHTML = `<video class="pm-card-img pm-ref-pair-img" src="${escapeHtml(v.video_url)}" controls playsinline></video>`;
+                        if (statusEl) statusEl.textContent = "Видео: готово";
+                        const buttonsEl = card.querySelector(".pm-ref-buttons");
+                        if (buttonsEl) buttonsEl.innerHTML = `<a href="${escapeHtml(v.video_url)}" download="video-${v.id}.mp4" class="pm-btn pm-btn-secondary pm-ref-download"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Скачать</a>`;
+                        updateDownloadAllButtonState();
+                    } else if (v.status === "failed") {
+                        if (card.dataset.lastStatus === "failed") continue;
+                        card.dataset.lastStatus = "failed";
+                        if (resultEl) resultEl.innerHTML = `<div class="pm-ref-result-empty pm-ref-video-error">Ошибка: ${escapeHtml(v.error_message || "Неизвестная ошибка")}</div>`;
+                        if (statusEl) statusEl.textContent = "Видео: ошибка";
+                    } else if (v.status === "processing") {
+                        const hasKie = !!v.kie_task_id;
+                        const detail = formatKieVideoStatus(v.kie_state, v.kie_progress, hasKie);
+                        if (statusEl) statusEl.textContent = "Видео: " + detail;
+                        if (detailEl) detailEl.textContent = detail;
+                    }
+                }
+                if (processing.length === 0) {
+                    clearInterval(videoPollIntervalId);
+                    videoPollIntervalId = null;
+                }
+            })
+            .catch(() => {});
+    }
+    poll();
+    videoPollIntervalId = setInterval(poll, 5000);
 }
 
 function copyPromptToClipboard(span) {
@@ -554,13 +768,22 @@ async function loadModels() {
 
 function renderInitial() {
     refsList.innerHTML = "";
+    const refsById = {};
     for (const ref of initialReferences) {
+        refsById[ref.id] = ref;
         renderReferenceCard(ref);
+        const videoGens = initialVideoGenerations.filter((v) => v.source_reference_id === ref.id);
+        for (const vg of videoGens) {
+            renderVideoCard(vg, ref);
+        }
     }
     updateRefsCount();
     updateGenerateButtonState();
     if (initialReferences.some(isPromptPending)) {
         startPollingForPrompts();
+    }
+    if (initialVideoGenerations.some((v) => v.status === "processing")) {
+        startVideoPolling();
     }
     loadModels();
     refreshReferencesFromApi().then(applyRefResultsFromApi);
@@ -719,6 +942,7 @@ function setRefResult(referenceId, previewUrl, originalUrl) {
     const empty = card.querySelector(".pm-ref-result-empty");
     const img = card.querySelector(".pm-ref-result-img");
     const downloadBtn = card.querySelector(".pm-ref-download");
+    const videoBtn = card.querySelector(".pm-ref-video");
 
     if (empty) empty.style.display = "none";
     if (img) {
@@ -729,6 +953,11 @@ function setRefResult(referenceId, previewUrl, originalUrl) {
     if (downloadBtn && originalUrl) {
         downloadBtn.dataset.originalUrl = originalUrl;
         downloadBtn.style.display = "";
+    }
+    if (videoBtn && originalUrl) {
+        videoBtn.dataset.resultOriginalUrl = originalUrl;
+        videoBtn.dataset.resultPreviewUrl = previewUrl || "";
+        videoBtn.style.display = "";
     }
 }
 
@@ -805,6 +1034,52 @@ function startResultElapsedTimer(referenceIds, onTick) {
     }, 1000);
     onTick(0);
     return () => clearInterval(id);
+}
+
+async function deleteVideoGeneration(videoId, cardEl) {
+    if (!projectId) return;
+    if (!confirm("Удалить эту генерацию видео?")) return;
+
+    const card = cardEl || refsList?.querySelector(`.pm-card-video[data-video-id="${videoId}"]`);
+    if (card) card.style.opacity = "0.5";
+
+    try {
+        const res = await fetch(`/api/projects/${projectId}/video-generations/${videoId}`, { method: "DELETE" });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "Ошибка удаления");
+        }
+        if (card) card.remove();
+    } catch (e) {
+        console.error(e);
+        if (card) card.style.opacity = "";
+        alert(getFriendlyFetchError(e));
+    }
+}
+
+async function deleteReference(referenceId, cardEl) {
+    if (!projectId) return;
+    if (!confirm("Удалить этот референс?")) return;
+
+    const card = cardEl || refsList?.querySelector(`.pm-card-ref[data-reference-id="${referenceId}"]`);
+    if (card) card.style.opacity = "0.5";
+
+    try {
+        const res = await fetch(`/api/projects/${projectId}/references/${referenceId}`, { method: "DELETE" });
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "Ошибка удаления");
+        }
+        if (card) card.remove();
+        // Удалить карточки видео этого референса
+        refsList?.querySelectorAll(`.pm-card-video[data-source-reference-id="${referenceId}"]`).forEach((c) => c.remove());
+        updateRefsCount();
+        updateGenerateButtonState();
+    } catch (e) {
+        console.error(e);
+        if (card) card.style.opacity = "";
+        alert(getFriendlyFetchError(e));
+    }
 }
 
 async function regenerateReference(referenceId, regenBtn) {

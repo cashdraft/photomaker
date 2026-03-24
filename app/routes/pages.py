@@ -6,7 +6,7 @@ from flask import Blueprint, current_app, render_template
 
 from app.db import db as db_handle
 from app.models import Project
-from app.services.project_service import get_latest_result_for_reference, list_references
+from app.services.project_service import get_latest_result_for_reference, list_references, list_video_generations
 from app.utils.image_utils import make_preview_image
 
 
@@ -54,11 +54,14 @@ def project_generation(project_id: str):
             ref_data["result_original_url"] = result["original_url"]
         references.append(ref_data)
 
+    video_generations = list_video_generations(project_id)
+
     return render_template(
         "project_generation.html",
         project={"id": project.id, "shirt_filename": project.shirt_filename},
         shirt_preview_url=shirt_preview_url,
         shirt_original_url=shirt_original_url,
         references=references,
+        video_generations=video_generations,
     )
 

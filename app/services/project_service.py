@@ -5,6 +5,7 @@ import mimetypes
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, List, Tuple
 
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
-from app.models import GenerationJob, Project, Reference
+from app.models import GenerationJob, Project, Reference, VideoGeneration
 from app.services.openai_prompt_service import generate_prompt_for_image
 from app.utils.image_utils import (
     compute_file_hash,
@@ -212,6 +213,37 @@ def regenerate_prompt_for_reference(project_id: str, reference_id: str) -> Refer
 
     threading.Thread(target=_process_with_context, daemon=True).start()
     return ref
+
+
+def delete_reference(project_id: str, reference_id: str) -> bool:
+    """Удаляет референс и связанные файлы. Возвращает True при успехе."""
+    app = current_app
+    db = _get_db_session()
+    ref: Reference | None = Reference.query.filter_by(id=reference_id, project_id=project_id).first()
+    if not ref:
+        logger.warning("delete_reference: ref %s not found in project %s", reference_id[:8], project_id[:8])
+        return False
+
+    # Удалить файлы с диска
+    refs_original = Path(app.config["REFERENCES_ORIGINAL_DIR"])
+    refs_preview = Path(app.config["REFERENCES_PREVIEW_DIR"])
+    for base, rel in [(refs_original, ref.original_rel_path), (refs_preview, ref.preview_rel_path)]:
+        if rel:
+            p = base / rel
+            if p.exists():
+                try:
+                    p.unlink()
+                except OSError as e:
+                    logger.warning("Не удалось удалить файл %s: %s", p, e)
+
+    try:
+        db.delete(ref)
+        db.commit()
+    except Exception as e:
+        logger.exception("delete_reference: failed to delete ref %s: %s", reference_id[:8], e)
+        db.rollback()
+        raise
+    return True
 
 
 def list_references(project_id: str) -> List[Reference]:
@@ -667,4 +699,156 @@ def generate_demo_results_for_reference(
             "status": "failed",
             "error_message": job.error_message,
         }
+
+
+def delete_video_generation(project_id: str, video_id: str) -> bool:
+    """Удаляет генерацию видео. Возвращает True при успехе."""
+    db = _get_db_session()
+    v: VideoGeneration | None = VideoGeneration.query.filter_by(
+        id=video_id, project_id=project_id
+    ).first()
+    if not v:
+        logger.warning("delete_video_generation: not found id=%s project=%s", video_id[:16], project_id[:16])
+        return False
+    db.delete(v)
+    db.commit()
+    return True
+
+
+def list_video_generations(project_id: str) -> List[dict]:
+    """Список генераций видео по проекту."""
+    db = _get_db_session()
+    vgens = (
+        VideoGeneration.query.filter_by(project_id=project_id)
+        .order_by(VideoGeneration.created_at.asc())
+        .all()
+    )
+    # Пометить «осиротевшие» задачи (processing без kie_task_id, старше 15 мин)
+    now = datetime.now(timezone.utc)
+    for v in vgens:
+        if v.status == "processing" and not v.kie_task_id and v.created_at:
+            created = v.created_at if v.created_at.tzinfo else v.created_at.replace(tzinfo=timezone.utc)
+            delta = (now - created).total_seconds()
+            if delta > 900:  # 15 min
+                v.status = "failed"
+                v.error_message = "Задача прервана (перезапуск сервера или ошибка)"
+                logger.info("video-gen %s: marked stale (no kie_task_id, age=%.0fs)", v.id[:8], delta)
+    if any(v.status == "failed" for v in vgens):
+        db.commit()
+    return [
+        {
+            "id": v.id,
+            "source_reference_id": v.source_reference_id,
+            "status": v.status,
+            "video_url": v.video_url,
+            "error_message": v.error_message,
+            "kie_task_id": v.kie_task_id,
+            "created_at": (v.created_at.isoformat() + "Z") if v.created_at else None,
+        }
+        for v in vgens
+    ]
+
+
+def generate_video_from_reference(project_id: str, reference_id: str) -> dict:
+    """
+    Запускает генерацию видео из результата референса через Kie grok-imagine/image-to-video.
+    Создаёт VideoGeneration, отправляет запрос в Kie, опрашивает в фоне.
+    """
+    app = current_app
+    db = _get_db_session()
+
+    project: Project | None = db.get(Project, project_id)  # type: ignore[arg-type]
+    if not project:
+        raise ValueError("Project not found")
+    ref: Reference | None = db.get(Reference, reference_id)  # type: ignore[arg-type]
+    if not ref or ref.project_id != project_id:
+        raise ValueError("Reference not found")
+
+    result_rel_path = ref.result_original_rel_path
+    if not result_rel_path:
+        job = (
+            GenerationJob.query.filter_by(
+                project_id=project_id, reference_id=reference_id, status="completed"
+            )
+            .filter(GenerationJob.result_original_rel_path.isnot(None))
+            .order_by(GenerationJob.created_at.desc())
+            .first()
+        )
+        if job:
+            result_rel_path = job.result_original_rel_path
+    if not result_rel_path:
+        raise ValueError("Нет сгенерированного результата для создания видео")
+
+    results_dir = Path(app.config["RESULTS_ORIGINAL_DIR"])
+    result_file_path = results_dir / result_rel_path
+    if not result_file_path.exists():
+        raise ValueError("Файл результата не найден")
+
+    video_id = str(uuid.uuid4())
+    vgen = VideoGeneration(
+        id=video_id,
+        project_id=project_id,
+        source_reference_id=reference_id,
+        status="processing",
+    )
+    db.add(vgen)
+    db.commit()
+
+    # Захватываем app в основном потоке (в request context)
+    flask_app = current_app._get_current_object()
+
+    def _run_video_generation():
+        with flask_app.app_context(), flask_app.test_request_context():
+            from app.services.kie_grok_video_service import create_video_task, poll_video_task
+            from app.services.kie_nanobanana_service import _upload_file_base64
+
+            db_session = _get_db_session()
+            v = db_session.get(VideoGeneration, video_id)  # type: ignore[arg-type]
+            if not v or v.status != "processing":
+                logger.warning("Video gen %s: skip (v=%s status=%s)", video_id[:8], "ok" if v else "None", v.status if v else "n/a")
+                return
+            try:
+                # Загружаем изображение в Kie CDN — createTask вернёт taskId за секунды
+                # (вместо ожидания загрузки с нашего сервера)
+                logger.info("Video gen %s: uploading image to Kie...", video_id[:8])
+                image_url = _upload_file_base64(
+                    result_file_path,
+                    upload_path="photomaker/video",
+                    file_name=f"video_src_{video_id[:8]}{result_file_path.suffix}",
+                )
+                logger.info("Video gen %s: calling Kie createTask image_url=%s", video_id[:8], image_url[:60])
+                task_id = create_video_task(
+                    image_url=image_url,
+                    mode="normal",
+                    duration="6",
+                    resolution="720p",
+                )
+                logger.info("Video gen %s: Kie task_id=%s", video_id[:8], task_id[:24] if task_id else None)
+                v.kie_task_id = task_id
+                db_session.commit()
+                result = poll_video_task(task_id, max_wait_sec=600, interval_sec=5.0)
+                urls = result.get("resultUrls", [])
+                if urls:
+                    v.video_url = urls[0]
+                    v.status = "completed"
+                else:
+                    v.status = "failed"
+                    v.error_message = "No video URL in Kie response"
+            except Exception as e:
+                logger.exception("Video gen %s: Kie failed: %s", video_id[:8], e)
+                v.status = "failed"
+                v.error_message = str(e)
+            finally:
+                try:
+                    db_session.commit()
+                except Exception as ce:
+                    logger.exception("Video gen %s: commit failed: %s", video_id[:8], ce)
+
+    threading.Thread(target=_run_video_generation, daemon=True).start()
+
+    return {
+        "id": video_id,
+        "source_reference_id": reference_id,
+        "status": "processing",
+    }
 

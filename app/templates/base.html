@@ -4,12 +4,12 @@
     <meta charset="utf-8">
     <title>{% block title %}PhotoMaker{% endblock %}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=22">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=23">
 </head>
 <body>
 <header class="pm-header">
     <div class="pm-container">
-        <h1 class="pm-logo">PhotoMaker</h1>
+        <h1 class="pm-logo"><a href="{{ url_for('pages.index') }}">PhotoMaker</a></h1>
     </div>
 </header>
 
