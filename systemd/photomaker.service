@@ -1,0 +1,20 @@
+[Unit]
+Description=PhotoMaker web application
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/photomaker
+ExecStart=/root/photomaker/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+Environment=PHOTOMAKER_HOST=0.0.0.0
+Environment=PHOTOMAKER_PORT=8000
+
+# Логи в journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=photomaker
+
+[Install]
+WantedBy=multi-user.target
